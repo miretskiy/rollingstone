@@ -1,36 +1,115 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RollingStone
 
-## Getting Started
+A **discrete event simulator** for RocksDB LSM trees, built with Go backend and React frontend.
 
-First, run the development server:
+## Quick Start
+
+**One command to rule them all:**
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+./start.sh
+# Automatically builds frontend (if needed) and starts backend
+# Open browser to http://localhost:8080
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Manual mode:**
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+# Build frontend once
+cd web && npm install && npm run build && cd ..
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# Build and run backend
+go build -o /tmp/rollingstone cmd/server/main.go
+/tmp/rollingstone
 
-## Learn More
+# Open browser to http://localhost:8080
+```
 
-To learn more about Next.js, take a look at the following resources:
+## What It Does
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+RollingStone simulates RocksDB's LSM tree behavior to help you:
+- **Analyze performance** of different RocksDB configurations
+- **Visualize** LSM tree structure, compactions, and I/O patterns in real-time
+- **Optimize** for specific workloads without running full benchmarks
+- **Understand** write amplification, read amplification, and space amplification
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Key Features
 
-## Deploy on Vercel
+### True Discrete Event Simulation
+- Event queue with virtual clock (not naive time-stepping)
+- Deterministic execution (same config → same results)
+- Fast simulation (hours of virtual time in seconds)
+- Models I/O contention, write stalls, and compaction scheduling
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Faithful RocksDB Modeling
+- **Tiered+Leveled compaction**: L0 overlapping, L1+ sorted runs
+- **Compaction scoring**: Priority-based level selection
+- **Parallel compactions**: Configurable background jobs
+- **File-level operations**: Statistical overlap simulation
+- **I/O bandwidth**: Disk contention and throughput limits
+- **Write stalls**: When memtables back up
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Interactive UI
+- Real-time LSM tree visualization (memtable, L0-L6)
+- Adjustable simulation parameters (write rate, I/O profiles)
+- Live metrics (amplifications, throughput, latencies)
+- Collapsible configuration sections with presets
+
+## Architecture
+
+```
+rollingstone/
+├── simulator/          # Core DES engine (Go)
+│   ├── simulator.go    # Event loop, virtual clock
+│   ├── lsm.go          # LSM tree state
+│   ├── compactor.go    # Compaction logic
+│   ├── metrics.go      # Performance tracking
+│   └── events.go       # Event types
+├── cmd/server/         # WebSocket server + embedded UI
+└── web/                # React frontend (Vite + TypeScript)
+```
+
+**Communication**: WebSocket with JSON messages (start, pause, reset, config updates, metrics streaming)
+
+## Configuration
+
+### LSM Tree Parameters
+- **Levels**: 3-7 levels (default: 7)
+- **Memtable size**: 64-256 MB (default: 64 MB)
+- **L0 trigger**: 4 files (default)
+- **Level multiplier**: 10x (default)
+- **Target file size**: 64 MB (default), grows with level depth
+
+### Workload
+- **Write rate**: 0-500 MB/s (adjustable during simulation)
+- **I/O profiles**: EBS gp3 (500 MB/s), NVMe (3000 MB/s), HDD (150 MB/s)
+- **Compaction parallelism**: 1-8 jobs (default: 2)
+
+## Development
+
+### Requirements
+- Go 1.21+
+- Node.js 18+ (for frontend development)
+
+### Build
+```bash
+# Backend
+go build -o /tmp/rollingstone cmd/server/main.go
+
+# Frontend (development)
+cd web && npm install && npm run dev
+```
+
+### Documentation
+- **[Architecture & Protocol](docs/ARCHITECTURE.md)**: System design, WebSocket protocol, deployment
+- **[Development Guide](docs/DEVELOPMENT.md)**: Implementation details, UI design, simulation fidelity
+
+## References
+
+Based on RocksDB documentation:
+- [Leveled Compaction](https://github.com/facebook/rocksdb/wiki/Leveled-Compaction)
+- [RocksDB Tuning Guide](https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide)
+
+## License
+
+MIT

@@ -10,6 +10,16 @@ type WriteActivity struct {
 	ToLevel   int     // Target level (for compactions)
 }
 
+// CompactionStats tracks aggregate compaction activity since last UI update
+// Useful for high-speed simulations where individual compactions complete too quickly to see
+type CompactionStats struct {
+	Count            int     `json:"count"`            // Number of compactions completed
+	TotalInputFiles  int     `json:"totalInputFiles"`  // Total source files compacted
+	TotalOutputFiles int     `json:"totalOutputFiles"` // Total output files created
+	TotalInputMB     float64 `json:"totalInputMB"`     // Total input data size
+	TotalOutputMB    float64 `json:"totalOutputMB"`    // Total output data size
+}
+
 // Metrics tracks amplification factors and performance statistics
 type Metrics struct {
 	Timestamp float64 `json:"timestamp"` // Virtual time
@@ -27,15 +37,19 @@ type Metrics struct {
 	TotalDataWrittenMB float64 `json:"totalDataWrittenMB"` // User writes
 	TotalDataReadMB    float64 `json:"totalDataReadMB"`    // User reads (future)
 
-	// Throughput tracking (MB/s)
-	FlushThroughputMBps      float64         `json:"flushThroughputMBps"`      // Memtable flush rate
-	CompactionThroughputMBps float64         `json:"compactionThroughputMBps"` // Total compaction write rate
-	TotalWriteThroughputMBps float64         `json:"totalWriteThroughputMBps"` // Total disk write rate
-	PerLevelThroughputMBps   map[int]float64 `json:"perLevelThroughputMBps"`   // Per-level compaction rates
+	// Throughput tracking (MB/s) - smoothed via exponential moving average
+	FlushThroughputMBps      float64         `json:"flushThroughputMBps"`      // Memtable flush rate (smoothed)
+	CompactionThroughputMBps float64         `json:"compactionThroughputMBps"` // Total compaction write rate (smoothed)
+	TotalWriteThroughputMBps float64         `json:"totalWriteThroughputMBps"` // Total disk write rate (smoothed)
+	PerLevelThroughputMBps   map[int]float64 `json:"perLevelThroughputMBps"`   // Per-level compaction rates (smoothed)
 
 	// In-progress activities (for UI display)
 	InProgressCount   int                      `json:"inProgressCount"`   // Number of ongoing writes
 	InProgressDetails []map[string]interface{} `json:"inProgressDetails"` // Details of ongoing writes
+
+	// Aggregate stats since last UI update (for fast simulations)
+	// Map of fromLevel -> stats for compactions that completed between UI updates
+	CompactionsSinceUpdate map[int]CompactionStats `json:"compactionsSinceUpdate"` // Per-level aggregate compaction activity
 
 	// Internal tracking
 	totalDiskWrittenMB float64         // Total bytes written to disk (including compaction)
@@ -43,6 +57,10 @@ type Metrics struct {
 	recentWrites       []WriteActivity // Recent write events for throughput calculation
 	inProgressWrites   []WriteActivity // Currently executing writes (not yet completed)
 	throughputWindow   float64         // Time window for throughput calculation (seconds)
+
+	// Exponential moving average smoothing (alpha = 0.2 for ~5-sample average)
+	smoothingAlpha float64 // 0.2 = smooth over ~5 samples
+	isFirstSample  bool    // Track first sample to initialize EMA
 }
 
 // NewMetrics creates a new metrics tracker
@@ -60,11 +78,14 @@ func NewMetrics() *Metrics {
 		CompactionThroughputMBps: 0,
 		TotalWriteThroughputMBps: 0,
 		PerLevelThroughputMBps:   make(map[int]float64),
+		CompactionsSinceUpdate:   make(map[int]CompactionStats),
 		totalDiskWrittenMB:       0,
 		logicalDataSizeMB:        0,
 		recentWrites:             make([]WriteActivity, 0),
 		inProgressWrites:         make([]WriteActivity, 0),
-		throughputWindow:         5.0, // 5-second sliding window
+		throughputWindow:         5.0,  // 5-second sliding window
+		smoothingAlpha:           0.2,  // Smooth over ~5 samples
+		isFirstSample:            true, // Initialize EMA with first sample
 	}
 }
 
@@ -120,7 +141,7 @@ func (m *Metrics) RecordFlush(sizeMB, startTime, endTime float64) {
 }
 
 // RecordCompaction records a compaction (reads input, writes output)
-func (m *Metrics) RecordCompaction(inputSizeMB, outputSizeMB, startTime, endTime float64, fromLevel int) {
+func (m *Metrics) RecordCompaction(inputSizeMB, outputSizeMB, startTime, endTime float64, fromLevel int, inputFileCount, outputFileCount int) {
 	// Compaction reads input files and writes output files
 	m.totalDiskWrittenMB += outputSizeMB
 
@@ -139,6 +160,22 @@ func (m *Metrics) RecordCompaction(inputSizeMB, outputSizeMB, startTime, endTime
 		SizeMB:    outputSizeMB,
 		Level:     fromLevel,
 	})
+
+	// Aggregate stats for fast simulations (multiple compactions between UI updates)
+	// Track per-level (fromLevel) for display in UI
+	stats := m.CompactionsSinceUpdate[fromLevel]
+	stats.Count++
+	stats.TotalInputFiles += inputFileCount
+	stats.TotalOutputFiles += outputFileCount
+	stats.TotalInputMB += inputSizeMB
+	stats.TotalOutputMB += outputSizeMB
+	m.CompactionsSinceUpdate[fromLevel] = stats
+}
+
+// ResetAggregateStats resets the aggregate compaction stats after a UI update
+// This allows tracking compactions that complete between UI updates (useful for fast simulations)
+func (m *Metrics) ResetAggregateStats() {
+	m.CompactionsSinceUpdate = make(map[int]CompactionStats)
 }
 
 // UpdateSpaceAmplification updates space amplification based on LSM tree state
@@ -237,16 +274,45 @@ func (m *Metrics) calculateThroughput() {
 		}
 	}
 
-	// Set instantaneous throughput
-	m.FlushThroughputMBps = flushBandwidth
-	m.CompactionThroughputMBps = compactionBandwidth
-	m.TotalWriteThroughputMBps = flushBandwidth + compactionBandwidth
+	// Apply exponential moving average (EMA) smoothing to reduce UI spikes
+	// EMA formula: smoothed = alpha * instantaneous + (1-alpha) * previous_smoothed
+	// alpha = 0.2 gives approximately 5-sample average
 
-	// Set per-level throughput
-	m.PerLevelThroughputMBps = make(map[int]float64)
-	for level, bandwidth := range perLevelBandwidth {
-		m.PerLevelThroughputMBps[level] = bandwidth
+	totalBandwidth := flushBandwidth + compactionBandwidth
+
+	if m.isFirstSample {
+		// Initialize EMA with first sample
+		m.FlushThroughputMBps = flushBandwidth
+		m.CompactionThroughputMBps = compactionBandwidth
+		m.TotalWriteThroughputMBps = totalBandwidth
+		m.isFirstSample = false
+	} else {
+		// Apply EMA smoothing
+		m.FlushThroughputMBps = m.smoothingAlpha*flushBandwidth + (1-m.smoothingAlpha)*m.FlushThroughputMBps
+		m.CompactionThroughputMBps = m.smoothingAlpha*compactionBandwidth + (1-m.smoothingAlpha)*m.CompactionThroughputMBps
+		m.TotalWriteThroughputMBps = m.smoothingAlpha*totalBandwidth + (1-m.smoothingAlpha)*m.TotalWriteThroughputMBps
 	}
+
+	// Set per-level throughput with EMA smoothing
+	smoothedPerLevel := make(map[int]float64)
+	for level, bandwidth := range perLevelBandwidth {
+		if prevBandwidth, exists := m.PerLevelThroughputMBps[level]; exists {
+			smoothedPerLevel[level] = m.smoothingAlpha*bandwidth + (1-m.smoothingAlpha)*prevBandwidth
+		} else {
+			smoothedPerLevel[level] = bandwidth // First sample for this level
+		}
+	}
+	// Also decay levels that are no longer active
+	for level, prevBandwidth := range m.PerLevelThroughputMBps {
+		if _, active := perLevelBandwidth[level]; !active {
+			// Decay towards zero
+			smoothedPerLevel[level] = (1 - m.smoothingAlpha) * prevBandwidth
+			if smoothedPerLevel[level] < 0.01 {
+				smoothedPerLevel[level] = 0 // Threshold to avoid tiny values
+			}
+		}
+	}
+	m.PerLevelThroughputMBps = smoothedPerLevel
 }
 
 // CapThroughput ensures throughput doesn't exceed physical disk limits

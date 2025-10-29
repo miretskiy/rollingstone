@@ -1,21 +1,15 @@
-import { Database, Activity } from 'lucide-react';
+import { Database, Activity, Layers } from 'lucide-react';
 import { useStore } from '../store';
-import type { LevelState } from '../types';
-
-interface CompactionDetail {
-    inputMB: number;
-    outputMB: number;
-    fromLevel: number;
-    toLevel: number;
-}
+import type { LevelState, ActiveCompactionInfo, CompactionStats } from '../types';
 
 interface LevelProps {
     level: LevelState;
-    isCompacting: boolean;
-    compactionDetails?: CompactionDetail[];
+    compactionInfos: ActiveCompactionInfo[];
+    compactionsSinceUpdate?: CompactionStats;
 }
 
-function Level({ level, isCompacting, compactionDetails }: LevelProps) {
+function Level({ level, compactionInfos, compactionsSinceUpdate }: LevelProps) {
+    const isCompacting = compactionInfos.length > 0;
     const formatSize = (mb: number) => {
         if (mb < 1024) return `${mb.toFixed(1)} MB`;
         if (mb < 1024 * 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -63,25 +57,56 @@ function Level({ level, isCompacting, compactionDetails }: LevelProps) {
                             <span className="text-lg font-bold">
                                 {level.level === 0 ? 'L0 (Tiered)' : `L${level.level} (Leveled)`}
                             </span>
-                            {isCompacting && compactionDetails && compactionDetails.length > 0 && (
-                                <span className="flex items-center gap-1 text-xs text-yellow-400">
-                                    <Activity className="w-3 h-3 animate-pulse" />
-                                    Compacting: {compactionDetails.map(d =>
-                                        `${formatSize(d.inputMB)} → ${formatSize(d.outputMB)}`
-                                    ).join(', ')}
-                                </span>
-                            )}
-                            {isCompacting && (!compactionDetails || compactionDetails.length === 0) && (
-                                <span className="flex items-center gap-1 text-xs text-yellow-400">
-                                    <Activity className="w-3 h-3 animate-pulse" />
-                                    Compacting
-                                </span>
-                            )}
+                            {isCompacting && (() => {
+                                // Aggregate file counts for all compactions
+                                const totalSourceFiles = compactionInfos.reduce((sum, c) => sum + c.sourceFileCount, 0);
+                                const totalTargetFiles = compactionInfos.reduce((sum, c) => sum + c.targetFileCount, 0);
+                                const isIntraL0 = compactionInfos[0].isIntraL0;
+                                const toLevel = compactionInfos[0].toLevel;
+                                const count = compactionInfos.length;
+
+                                return (
+                                    <span className="flex items-center gap-1 text-xs text-yellow-400">
+                                        <Activity className="w-3 h-3 animate-pulse" />
+                                        {isIntraL0 ?
+                                            `Intra-L0: ${totalSourceFiles} files` :
+                                            `→L${toLevel}: ${totalSourceFiles} + ${totalTargetFiles} files`
+                                        }
+                                        {count > 1 && (
+                                            <span className="flex items-center gap-0.5 ml-1">
+                                                (<Layers className="w-3 h-3" />{count})
+                                            </span>
+                                        )}
+                                    </span>
+                                );
+                            })()}
                         </div>
+                        {/* Compactions completed since last UI update (for fast simulations) */}
+                        {compactionsSinceUpdate && compactionsSinceUpdate.count > 0 && (
+                            <div className="mt-1 text-xs text-blue-400">
+                                ↻ {compactionsSinceUpdate.count} compaction{compactionsSinceUpdate.count > 1 ? 's' : ''} since last update
+                                ({compactionsSinceUpdate.totalInputFiles} → {compactionsSinceUpdate.totalOutputFiles} files)
+                            </div>
+                        )}
                         <div className="flex items-center gap-4 text-sm text-gray-400 mt-1">
                             <span>{level.fileCount} {level.fileCount === 1 ? 'file' : 'files'}</span>
                             <span>•</span>
-                            <span>{formatSize(level.totalSizeMB)}</span>
+                            <span>
+                                {formatSize(level.totalSizeMB)}
+                                {level.level > 0 && level.targetSizeMB > 0 && (
+                                    <span className="text-gray-500">
+                                        {' '}/ {formatSize(level.targetSizeMB)} target
+                                    </span>
+                                )}
+                            </span>
+                            {level.level > 0 && level.targetSizeMB > 0 && (
+                                <>
+                                    <span>•</span>
+                                    <span className={level.totalSizeMB > level.targetSizeMB ? 'text-yellow-400' : 'text-green-400'}>
+                                        {(level.totalSizeMB / level.targetSizeMB).toFixed(2)}x
+                                    </span>
+                                </>
+                            )}
                             {oldestFileTimestamp > 0 && (
                                 <>
                                     <span>•</span>
@@ -125,17 +150,15 @@ export function LSMTreeVisualization() {
         );
     }
 
-    const activeCompactions = new Set(currentState.activeCompactions || []);
-
-    // Build a map of level -> compaction details
-    const compactionsByLevel = new Map<number, CompactionDetail[]>();
-    if (currentMetrics?.inProgressDetails) {
-        for (const detail of currentMetrics.inProgressDetails) {
-            const fromLevel = detail.fromLevel;
-            if (!compactionsByLevel.has(fromLevel)) {
-                compactionsByLevel.set(fromLevel, []);
+    // Build a map of level -> active compaction infos
+    const compactionInfosByLevel = new Map<number, ActiveCompactionInfo[]>();
+    if (currentState.activeCompactionInfos) {
+        for (const info of currentState.activeCompactionInfos) {
+            const fromLevel = info.fromLevel;
+            if (!compactionInfosByLevel.has(fromLevel)) {
+                compactionInfosByLevel.set(fromLevel, []);
             }
-            compactionsByLevel.get(fromLevel)!.push(detail);
+            compactionInfosByLevel.get(fromLevel)!.push(info);
         }
     }
 
@@ -155,21 +178,34 @@ export function LSMTreeVisualization() {
 
             {/* Memtable */}
             <div className="bg-dark-card border border-green-900 rounded-lg p-4 shadow-lg">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 mb-3">
                     <Database className="w-5 h-5 text-green-400" />
                     <div className="flex-1">
                         <div className="text-lg font-bold text-green-400">Memtable (In-Memory)</div>
                         <div className="text-sm text-gray-400">
-                            {formatSize(currentState.memtableCurrentSizeMB)}
+                            Active: {formatSize(currentState.memtableCurrentSizeMB)} / 64 MB
                         </div>
                     </div>
                     <div className="w-48 h-6 bg-dark-bg rounded-full overflow-hidden">
                         <div
                             className="h-full bg-green-500 rounded-full transition-all duration-300"
-                            style={{ width: `${(currentState.memtableCurrentSizeMB / 128) * 100}%` }}
+                            style={{ width: `${(currentState.memtableCurrentSizeMB / 64) * 100}%` }}
                         />
                     </div>
                 </div>
+                {/* Immutable Memtables */}
+                {currentState.numImmutableMemtables && currentState.numImmutableMemtables > 0 && (
+                    <div className="mt-2 pt-2 border-t border-green-900/30">
+                        <div className="flex items-center justify-between text-sm">
+                            <span className="text-yellow-400">
+                                ⏳ Immutable: {currentState.numImmutableMemtables} memtable{currentState.numImmutableMemtables > 1 ? 's' : ''} flushing
+                            </span>
+                            <span className="text-yellow-300 font-mono">
+                                {formatSize((currentState.immutableMemtableSizesMB || []).reduce((a, b) => a + b, 0))}
+                            </span>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Levels */}
@@ -178,8 +214,8 @@ export function LSMTreeVisualization() {
                     <Level
                         key={level.level}
                         level={level}
-                        isCompacting={activeCompactions.has(level.level)}
-                        compactionDetails={compactionsByLevel.get(level.level)}
+                        compactionInfos={compactionInfosByLevel.get(level.level) || []}
+                        compactionsSinceUpdate={currentMetrics?.compactionsSinceUpdate?.[level.level]}
                     />
                 ))}
             </div>

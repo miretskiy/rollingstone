@@ -39,21 +39,25 @@ func (d *ExponentialDistribution) Sample(rng *rand.Rand, min, max int) int {
 		return min
 	}
 
-	// Generate exponential random variable
+	// Generate exponential random variable using inverse transform sampling
+	// Standard formula: X = -ln(U) / lambda
 	u := rng.Float64()
-	x := -d.Lambda * (1.0 - u)
+	if u == 0 {
+		u = 1e-10 // Avoid log(0)
+	}
+	x := -math.Log(u) / d.Lambda
+
+	// Normalize to [0, 1] by clamping at a reasonable upper bound
+	// For lambda=0.5, 95% of values are < 6, so use that as max
+	maxVal := 6.0 / d.Lambda
+	normalized := x / maxVal
+	if normalized > 1.0 {
+		normalized = 1.0
+	}
 
 	// Scale to [min, max] range
 	range_ := float64(max - min)
-	scaled := x * range_
-
-	// Clamp and convert to int
-	if scaled < 0 {
-		scaled = 0
-	}
-	if scaled > range_ {
-		scaled = range_
-	}
+	scaled := normalized * range_
 
 	return min + int(scaled)
 }

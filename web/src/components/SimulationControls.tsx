@@ -47,8 +47,9 @@ export function SimulationControls() {
 
   // Determine if a parameter can be changed while running
   const isStaticParam = (field: keyof SimulationConfig): boolean => {
-    // Only writeRateMBps can be adjusted while running
-    return field !== 'writeRateMBps';
+    // Only writeRateMBps and simulationSpeedMultiplier can be adjusted while running
+    // All other parameters (including initialLSMSizeMB) require pause/reset
+    return field !== 'writeRateMBps' && field !== 'simulationSpeedMultiplier';
   };
 
   // Check if config controls should be disabled
@@ -171,13 +172,13 @@ export function SimulationControls() {
                         numLevels: 7,
                         memtableFlushSizeMB: 64,
                         maxWriteBufferNumber: 2,
-                        memtableFlushTimeoutSec: 300,
                         l0CompactionTrigger: 4,
                         maxBytesForLevelBaseMB: 256,
                         levelMultiplier: 10,
                         compactionReductionFactor: 0.9,
                         maxBackgroundJobs: 2,
                         maxSubcompactions: 1,
+                        maxCompactionBytesMB: 1600,
                         writeRateMBps: 10,
                         ioLatencyMs: 5,
                         ioThroughputMBps: 500,
@@ -197,13 +198,13 @@ export function SimulationControls() {
                         numLevels: 3,
                         memtableFlushSizeMB: 64,
                         maxWriteBufferNumber: 2,
-                        memtableFlushTimeoutSec: 60,
                         l0CompactionTrigger: 4,
                         maxBytesForLevelBaseMB: 256,
                         levelMultiplier: 10,
                         compactionReductionFactor: 0.9,
                         maxBackgroundJobs: 2,
                         maxSubcompactions: 1,
+                        maxCompactionBytesMB: 1600,
                         writeRateMBps: 10,
                         ioLatencyMs: 5,
                         ioThroughputMBps: 500,
@@ -328,6 +329,17 @@ export function SimulationControls() {
                     hint="How many compactions can run simultaneously. 1 = sequential (slow), 2-4 = typical, 6+ = aggressive. More parallelism = higher disk I/O. RocksDB default: 2 (max_background_jobs)"
                     disabled={isConfigDisabled('maxBackgroundJobs')}
                   />
+                  <ConfigSlider
+                    label="Max Compaction Size (MB)"
+                    value={config.maxCompactionBytesMB}
+                    min={128}
+                    max={10000}
+                    step={128}
+                    onChange={(v) => handleConfigChange('maxCompactionBytesMB', v)}
+                    hint="Maximum total input size for a single compaction job. Prevents compactions from becoming too large and blocking. RocksDB typically uses ~25x target_file_size_base. 0 = unlimited. Default: 1600 MB (max_compaction_bytes)"
+                    disabled={isConfigDisabled('maxCompactionBytesMB')}
+                    formatValue={(v) => `${v} MB`}
+                  />
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button
@@ -415,16 +427,6 @@ export function SimulationControls() {
                     disabled={isConfigDisabled('maxWriteBufferNumber')}
                   />
                   <ConfigSlider
-                    label="Flush Timeout (sec)"
-                    value={config.memtableFlushTimeoutSec}
-                    min={0}
-                    max={600}
-                    step={30}
-                    onChange={(v) => handleConfigChange('memtableFlushTimeoutSec', v)}
-                    hint="Flush memtable after this many seconds, even if not full. Prevents data loss and reduces recovery time. 0 = disabled (only size-based flushes)."
-                    disabled={isConfigDisabled('memtableFlushTimeoutSec')}
-                  />
-                  <ConfigSlider
                     label="L1 Base Size (MB)"
                     value={config.maxBytesForLevelBaseMB}
                     min={64}
@@ -454,6 +456,27 @@ export function SimulationControls() {
                     hint="Split each compaction job into sub-jobs for parallel execution. Only helps for very large compactions (L0→L1). RocksDB default: 1 (max_subcompactions)"
                     disabled={isConfigDisabled('maxSubcompactions')}
                   />
+                  <ConfigSlider
+                    label="Initial LSM Size (MB)"
+                    value={config.initialLSMSizeMB}
+                    min={0}
+                    max={100000}
+                    step={1000}
+                    onChange={(v) => handleConfigChange('initialLSMSizeMB', v)}
+                    hint="Pre-populate LSM with this much data to skip warmup. Data is distributed across levels proportionally to their targets. 0 = start empty. Applied on Start/Reset."
+                    disabled={isConfigDisabled('initialLSMSizeMB')}
+                  />
+                  <ConfigSlider
+                    label="Simulation Speed"
+                    value={config.simulationSpeedMultiplier}
+                    min={1}
+                    max={100}
+                    step={1}
+                    onChange={(v) => handleConfigChange('simulationSpeedMultiplier', v)}
+                    hint="Process N events per step. Higher = faster simulation. 1 = real-time feel, 10 = 10x faster. Great for quickly exploring long-term LSM behavior."
+                    formatValue={(v) => `${v}x`}
+                    disabled={isConfigDisabled('simulationSpeedMultiplier')}
+                  />
                 </div>
               </div>
             )}
@@ -477,18 +500,53 @@ interface ConfigSliderProps {
 }
 
 function ConfigSlider({ label, value, min, max, step, onChange, hint, formatValue, disabled = false }: ConfigSliderProps) {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    if (!isNaN(val) && val >= min && val <= max) {
+      onChange(val);
+    }
+  };
+
+  const handleInputBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    // Clamp value on blur if user typed something out of range
+    let val = parseFloat(e.target.value);
+    if (isNaN(val)) {
+      val = value; // Reset to current if invalid
+    } else {
+      val = Math.max(min, Math.min(max, val));
+    }
+    onChange(val);
+  };
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <label
-          className={`text-sm font-medium cursor-help ${disabled ? 'text-gray-500' : 'text-gray-300'}`}
+          className={`text-sm font-medium cursor-help flex-1 ${disabled ? 'text-gray-500' : 'text-gray-300'}`}
           title={hint || label}
         >
           {label}
         </label>
-        <span className={`text-sm font-mono px-2 py-1 rounded ${disabled ? 'bg-gray-900 text-gray-600' : 'bg-gray-800 text-gray-200'}`}>
-          {formatValue ? formatValue(value) : value}
-        </span>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={handleInputChange}
+          onBlur={handleInputBlur}
+          disabled={disabled}
+          className={`w-24 px-2 py-1 text-sm font-mono rounded border ${disabled
+            ? 'bg-gray-900 text-gray-600 border-gray-800 cursor-not-allowed'
+            : 'bg-gray-800 text-gray-200 border-gray-700 focus:border-primary-500 focus:outline-none'
+            }`}
+          title={hint || `${label}: ${formatValue ? formatValue(value) : value}`}
+        />
+        {formatValue && (
+          <span className="text-xs text-gray-500 w-8">
+            {formatValue(value)}
+          </span>
+        )}
       </div>
       <input
         type="range"

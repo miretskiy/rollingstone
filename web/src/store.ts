@@ -47,7 +47,6 @@ export const useStore = create<AppStore>((set, get) => ({
         writeRateMBps: 10,
         memtableFlushSizeMB: 64,
         maxWriteBufferNumber: 2,
-        memtableFlushTimeoutSec: 300,
         l0CompactionTrigger: 4,
         maxBytesForLevelBaseMB: 256,
         levelMultiplier: 10,
@@ -55,9 +54,12 @@ export const useStore = create<AppStore>((set, get) => ({
         compactionReductionFactor: 0.9,
         maxBackgroundJobs: 2,
         maxSubcompactions: 1,
+        maxCompactionBytesMB: 1600,
         ioLatencyMs: 5,
         ioThroughputMBps: 500,
         numLevels: 7,
+        initialLSMSizeMB: 0,
+        simulationSpeedMultiplier: 1,
     },
     currentMetrics: null,
     metricsHistory: [],
@@ -168,6 +170,12 @@ export const useStore = create<AppStore>((set, get) => ({
                         isRunning: message.running,
                         config: message.config,
                     });
+                    break;
+
+                case 'error':
+                    console.error('❌ Server error:', message.error);
+                    // Show error to user - you could add a toast/notification here
+                    alert(`Configuration error: ${message.error}`);
                     break;
 
                 case 'metrics':

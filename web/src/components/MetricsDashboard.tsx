@@ -16,10 +16,29 @@ export function MetricsDashboard() {
         return `${(mb / (1024 * 1024)).toFixed(1)} TB`;
     };
 
+    // Count total active compactions across all levels
+    const activeCompactionCount = currentState?.activeCompactionInfos?.length ?? 0;
+
     return (
         <div className="space-y-6">
             {/* Key Metrics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                {/* Active Compactions */}
+                <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <Activity className={`w-4 h-4 ${activeCompactionCount > 0 ? 'text-yellow-400 animate-pulse' : 'text-gray-500'}`} />
+                            <span className="text-sm text-gray-400">Active Compactions</span>
+                        </div>
+                    </div>
+                    <div className={`text-3xl font-bold ${activeCompactionCount > 0 ? 'text-yellow-400' : 'text-gray-500'}`}>
+                        {activeCompactionCount}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                        {activeCompactionCount > 0 ? `${config.maxBackgroundJobs} max parallel` : 'Idle'}
+                    </div>
+                </div>
+
                 {/* Write Amplification */}
                 <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-2">

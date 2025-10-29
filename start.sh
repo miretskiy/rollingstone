@@ -1,6 +1,10 @@
 #!/bin/bash
 # RollingStone Unified Startup Script
-# Builds frontend if needed, compiles backend, and starts the server
+# Builds frontend and backend, then starts the server
+#
+# Usage:
+#   ./start.sh              # Build frontend and backend (default)
+#   ./start.sh --skip-ui    # Skip frontend rebuild (faster for backend-only changes)
 
 set -e  # Exit on error
 
@@ -10,11 +14,35 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Parse arguments
+SKIP_UI=false
+if [ "$1" == "--skip-ui" ]; then
+    SKIP_UI=true
+fi
+
 echo -e "${GREEN}🚀 Starting RollingStone...${NC}"
 
-# Check if web/dist exists
-if [ ! -d "web/dist" ]; then
-    echo -e "${YELLOW}📦 Frontend not built. Building...${NC}"
+# Kill any existing server instances
+echo -e "${YELLOW}🔍 Checking for existing server...${NC}"
+EXISTING_PID=$(lsof -ti:8080 2>/dev/null || true)
+if [ -n "$EXISTING_PID" ]; then
+    echo -e "${YELLOW}🛑 Killing existing server (PID: $EXISTING_PID)...${NC}"
+    kill -9 $EXISTING_PID 2>/dev/null || true
+    sleep 1
+    echo -e "${GREEN}✅ Existing server stopped${NC}"
+else
+    echo -e "${GREEN}✅ No existing server found${NC}"
+fi
+
+# Build or check frontend
+if [ "$SKIP_UI" = true ]; then
+    if [ ! -d "web/dist" ]; then
+        echo -e "${RED}❌ Frontend not built and --skip-ui specified. Run without --skip-ui first.${NC}"
+        exit 1
+    fi
+    echo -e "${YELLOW}⏭️  Skipping frontend rebuild (using existing web/dist)${NC}"
+else
+    echo -e "${YELLOW}🔨 Building frontend...${NC}"
     cd web
     
     # Check if node_modules exists
@@ -23,12 +51,9 @@ if [ ! -d "web/dist" ]; then
         npm install
     fi
     
-    echo -e "${YELLOW}🔨 Building frontend...${NC}"
     npm run build
     cd ..
     echo -e "${GREEN}✅ Frontend built successfully${NC}"
-else
-    echo -e "${GREEN}✅ Frontend already built (web/dist found)${NC}"
 fi
 
 # Build Go backend

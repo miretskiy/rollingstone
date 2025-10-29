@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -13,8 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/yevgeniy-miretskiy/rollingstone/simulator"
 )
-
-var indexTemplate *template.Template
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -38,6 +35,7 @@ type ServerMessage struct {
 	Config  *simulator.SimConfig   `json:"config,omitempty"`
 	Metrics *simulator.Metrics     `json:"metrics,omitempty"`
 	State   map[string]interface{} `json:"state,omitempty"`
+	Error   *string                `json:"error,omitempty"` // Validation or runtime errors
 }
 
 // simState manages the simulation state and UI pacing
@@ -63,10 +61,19 @@ func newSimState(config simulator.SimConfig) (*simState, error) {
 	}, nil
 }
 
-// start begins the simulation (sets running flag)
+// start begins the simulation
 func (s *simState) start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// If we're starting from initial state (never started before),
+	// we need to call Reset() to schedule events
+	// Check if queue is empty to detect this
+	if s.sim.IsQueueEmpty() {
+		log.Println("First start detected - resetting to schedule events")
+		s.sim.Reset()
+	}
+
 	s.running = true
 	s.paused = false
 }
@@ -108,13 +115,27 @@ func (s *simState) getConfig() simulator.SimConfig {
 	return s.sim.Config()
 }
 
-// step advances simulation by deltaT (called by UI ticker)
-func (s *simState) step(deltaT float64) {
+// step advances simulation by one step (called by UI ticker)
+// Returns error message if simulation panicked
+func (s *simState) step() (errMsg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running && !s.paused {
-		s.sim.Step(deltaT)
+
+	if !s.running || s.paused {
+		return ""
 	}
+
+	// Recover from panics to prevent server crash
+	defer func() {
+		if r := recover(); r != nil {
+			s.running = false // Stop the simulation
+			errMsg = fmt.Sprintf("Simulation panic: %v", r)
+			log.Printf("⚠️  %s", errMsg)
+		}
+	}()
+
+	s.sim.Step()
+	return ""
 }
 
 // metrics returns current metrics
@@ -129,6 +150,13 @@ func (s *simState) state() map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sim.State()
+}
+
+// resetAggregateStats resets aggregate compaction stats after UI update
+func (s *simState) resetAggregateStats() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sim.Metrics().ResetAggregateStats()
 }
 
 // stop signals the UI loop to stop
@@ -150,8 +178,31 @@ func uiUpdateLoop(conn *safeConn, state *simState) {
 
 		case <-ticker.C:
 			if state.isRunning() {
-				// Advance simulation by 1 virtual second
-				state.step(1.0)
+				// Advance simulation by one step
+				// (Virtual time advanced determined by SimulationSpeedMultiplier)
+				if errMsg := state.step(); errMsg != "" {
+					// Simulation panicked - send error to UI and stop
+					errorMsg := ServerMessage{
+						Type:  "error",
+						Error: &errMsg,
+					}
+					if err := conn.WriteJSON(errorMsg); err != nil {
+						log.Printf("Error sending panic error: %v", err)
+					}
+
+					// Send stopped status
+					running := false
+					config := state.getConfig()
+					statusMsg := ServerMessage{
+						Type:    "status",
+						Running: &running,
+						Config:  &config,
+					}
+					if err := conn.WriteJSON(statusMsg); err != nil {
+						log.Printf("Error sending stopped status: %v", err)
+					}
+					continue
+				}
 
 				// Send metrics update
 				metrics := state.metrics()
@@ -174,6 +225,9 @@ func uiUpdateLoop(conn *safeConn, state *simState) {
 					log.Printf("Error sending state: %v", err)
 					return
 				}
+
+				// Reset aggregate stats after UI update (for fast simulations)
+				state.resetAggregateStats()
 			}
 		}
 	}
@@ -281,6 +335,13 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if msg.Config != nil {
 				if err := state.updateConfig(*msg.Config); err != nil {
 					log.Printf("Error updating config: %v", err)
+					// Send error back to UI
+					errStr := err.Error()
+					errorMsg := ServerMessage{
+						Type:  "error",
+						Error: &errStr,
+					}
+					safeConn.WriteJSON(errorMsg)
 				} else {
 					log.Printf("Config updated: %+v", msg.Config)
 					running := state.isRunning()
@@ -301,20 +362,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.Error(w, "Not found", http.StatusNotFound)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := indexTemplate.Execute(w, nil); err != nil {
-		log.Printf("Error executing template: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
+	// Serve the React app's index.html (for root and SPA routing)
+	http.ServeFile(w, r, filepath.Join("web", "dist", "index.html"))
 }
 
 func quitHandler(w http.ResponseWriter, r *http.Request) {
@@ -330,22 +379,44 @@ func quitHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// Load templates
-	templatePath := filepath.Join("templates", "index.html")
-	var err error
-	indexTemplate, err = template.ParseFiles(templatePath)
-	if err != nil {
-		log.Fatalf("Error loading template: %v", err)
+	// Serve static files from web/dist (React build output)
+	distDir := filepath.Join("web", "dist")
+	if _, err := os.Stat(distDir); os.IsNotExist(err) {
+		log.Fatalf("❌ Frontend not built! Run 'cd web && npm run build' first, or use ./start.sh")
 	}
-	log.Printf("✓ Loaded template: %s", templatePath)
 
-	http.HandleFunc("/", serveHome)
-	http.HandleFunc("/ws", handleWebSocket)
-	http.HandleFunc("/quitquitquit", quitHandler)
+	// Create file server for static assets
+	fileServer := http.FileServer(http.Dir(distDir))
+
+	// Serve static files (favicon, assets, etc.)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// WebSocket endpoint
+		if r.URL.Path == "/ws" {
+			handleWebSocket(w, r)
+			return
+		}
+		// Shutdown endpoint
+		if r.URL.Path == "/quitquitquit" {
+			quitHandler(w, r)
+			return
+		}
+		// Static files (favicon, assets, etc.) - serve if file exists
+		if r.URL.Path != "/" {
+			filePath := filepath.Join(distDir, r.URL.Path)
+			if _, err := os.Stat(filePath); err == nil {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		// Default to index.html for root and non-existent paths (SPA routing)
+		serveHome(w, r)
+	})
 
 	addr := ":8080"
 	log.Printf("🚀 Server starting on http://localhost%s", addr)
+	log.Printf("📁 Serving React app from: %s", distDir)
 	log.Printf("📡 WebSocket endpoint: ws://localhost%s/ws", addr)
 	log.Printf("🛑 Shutdown endpoint: http://localhost%s/quitquitquit", addr)
+	log.Printf("🎨 Favicon: http://localhost%s/vite.svg", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }

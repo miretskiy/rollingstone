@@ -268,7 +268,7 @@ func TestCalculateCompactionScoreL0(t *testing.T) {
 	tree := NewLSMTree(3, 64.0)
 
 	t.Run("empty L0", func(t *testing.T) {
-		score := tree.calculateCompactionScore(0, config)
+		score := tree.calculateCompactionScore(0, config, 0.0)
 		if score != 0.0 {
 			t.Errorf("Expected score 0.0 for empty L0, got %.2f", score)
 		}
@@ -278,7 +278,7 @@ func TestCalculateCompactionScoreL0(t *testing.T) {
 		tree.Levels[0].AddSize(64, 1.0)
 		tree.Levels[0].AddSize(64, 2.0)
 
-		score := tree.calculateCompactionScore(0, config)
+		score := tree.calculateCompactionScore(0, config, 0.0)
 		expected := 2.0 / 4.0 // 2 files / 4 trigger
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -291,7 +291,7 @@ func TestCalculateCompactionScoreL0(t *testing.T) {
 			tree.Levels[0].AddSize(64, float64(i))
 		}
 
-		score := tree.calculateCompactionScore(0, config)
+		score := tree.calculateCompactionScore(0, config, 0.0)
 		expected := 4.0 / 4.0 // 4 files / 4 trigger = 1.0
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -304,7 +304,7 @@ func TestCalculateCompactionScoreL0(t *testing.T) {
 			tree.Levels[0].AddSize(64, float64(i))
 		}
 
-		score := tree.calculateCompactionScore(0, config)
+		score := tree.calculateCompactionScore(0, config, 0.0)
 		expected := 8.0 / 4.0 // 8 files / 4 trigger = 2.0
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -324,7 +324,7 @@ func TestCalculateCompactionScoreL1Plus(t *testing.T) {
 	tree := NewLSMTree(3, 64.0)
 
 	t.Run("L1 empty", func(t *testing.T) {
-		score := tree.calculateCompactionScore(1, config)
+		score := tree.calculateCompactionScore(1, config, 0.0)
 		if score != 0.0 {
 			t.Errorf("Expected score 0.0 for empty L1, got %.2f", score)
 		}
@@ -334,7 +334,7 @@ func TestCalculateCompactionScoreL1Plus(t *testing.T) {
 		// Target for L1 = MaxBytesForLevelBaseMB = 256
 		tree.Levels[1].AddSize(256, 1.0)
 
-		score := tree.calculateCompactionScore(1, config)
+		score := tree.calculateCompactionScore(1, config, 0.0)
 		expected := 256.0 / 256.0 // = 1.0
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -345,7 +345,7 @@ func TestCalculateCompactionScoreL1Plus(t *testing.T) {
 		tree = NewLSMTree(3, 64.0)
 		tree.Levels[1].AddSize(512, 1.0)
 
-		score := tree.calculateCompactionScore(1, config)
+		score := tree.calculateCompactionScore(1, config, 0.0)
 		expected := 512.0 / 256.0 // = 2.0
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -357,7 +357,7 @@ func TestCalculateCompactionScoreL1Plus(t *testing.T) {
 		// Target for L2 = 256 * 10^(2-1) = 2560
 		tree.Levels[2].AddSize(2560, 1.0)
 
-		score := tree.calculateCompactionScore(2, config)
+		score := tree.calculateCompactionScore(2, config, 0.0)
 		expected := 2560.0 / 2560.0 // = 1.0
 		if score != expected {
 			t.Errorf("Expected score %.2f, got %.2f", expected, score)
@@ -456,13 +456,13 @@ func TestCalculateCompactionScoreInvalidLevel(t *testing.T) {
 	tree := NewLSMTree(3, 64.0)
 
 	// Negative level
-	score := tree.calculateCompactionScore(-1, config)
+	score := tree.calculateCompactionScore(-1, config, 0.0)
 	if score != 0.0 {
 		t.Errorf("Expected score 0.0 for negative level, got %.2f", score)
 	}
 
 	// Out of range level
-	score = tree.calculateCompactionScore(99, config)
+	score = tree.calculateCompactionScore(99, config, 0.0)
 	if score != 0.0 {
 		t.Errorf("Expected score 0.0 for out of range level, got %.2f", score)
 	}
@@ -480,7 +480,8 @@ func TestLSMTreeState(t *testing.T) {
 	tree.TotalSizeMB = 100 + 250 // L0 + L1 (memtable doesn't count toward TotalSizeMB)
 
 	virtualTime := 20.0
-	state := tree.State(virtualTime)
+	config := DefaultConfig()
+	state := tree.State(virtualTime, config)
 
 	// Check memtable
 	if state["memtableCurrentSizeMB"] != 50.0 {
@@ -515,5 +516,203 @@ func TestLSMTreeState(t *testing.T) {
 		if age != expectedAge {
 			t.Errorf("Expected age %.1f, got %.1f", expectedAge, age)
 		}
+	}
+}
+
+// TestCompactingSizeExclusion tests that files being compacted are excluded
+// from score calculation (RocksDB's level_bytes_no_compacting behavior)
+func TestCompactingSizeExclusion(t *testing.T) {
+	config := DefaultConfig()
+	config.NumLevels = 3
+	config.MaxBytesForLevelBaseMB = 256
+
+	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+
+	// Add 300MB to L1 (exceeds 256MB target)
+	tree.Levels[1].AddSize(300.0, 1.0)
+
+	// Without compacting bytes: score = 300 / 256 = 1.17
+	score := tree.calculateCompactionScore(1, config, 0.0)
+	expectedScore := 300.0 / 256.0
+	if score != expectedScore {
+		t.Errorf("Expected score %.2f, got %.2f", expectedScore, score)
+	}
+
+	// Mark 100MB as being compacted
+	tree.Levels[1].CompactingSize = 100.0
+
+	// With compacting bytes: score = (300 - 100) / 256 = 200 / 256 = 0.78
+	score = tree.calculateCompactionScore(1, config, 0.0)
+	expectedScore = 200.0 / 256.0
+	if score != expectedScore {
+		t.Errorf("With compacting bytes: expected score %.2f, got %.2f", expectedScore, score)
+	}
+
+	// Verify score dropped below 1.0 (no longer needs compaction)
+	if score >= 1.0 {
+		t.Errorf("Score should be < 1.0 when compacting bytes reduce level below target, got %.2f", score)
+	}
+}
+
+// TestTotalDowncompactBytes tests the helper function for static mode
+func TestTotalDowncompactBytes(t *testing.T) {
+	config := DefaultConfig()
+	config.NumLevels = 5
+	config.MaxBytesForLevelBaseMB = 256
+	config.LevelCompactionDynamicLevelBytes = false // Static mode (default)
+
+	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+
+	// Setup: L1 = 600MB (exceeds 256MB target)
+	tree.Levels[1].AddSize(600.0, 1.0)
+
+	// In static mode: simple ratio, no kScoreScale
+	// Score = 600 / 256 = 2.34
+	score := tree.calculateCompactionScore(1, config, 0.0)
+	expectedScore := 600.0 / 256.0
+	tolerance := 0.01
+	if score < expectedScore-tolerance || score > expectedScore+tolerance {
+		t.Errorf("Static mode score: expected %.2f, got %.2f", expectedScore, score)
+	}
+
+	// In static mode, totalDowncompactBytes is calculated but not used in scoring
+	// Score remains the same
+	totalDowncompactBytes := 300.0
+	scoreWithDowncompact := tree.calculateCompactionScore(1, config, totalDowncompactBytes)
+	if scoreWithDowncompact != score {
+		t.Errorf("Static mode: score should be unchanged with downcompact, %.2f vs %.2f",
+			score, scoreWithDowncompact)
+	}
+
+	// TODO(fidelity): Add full dynamic mode test when full CalculateBaseBytes is implemented
+}
+
+// TestDynamicModeKScoreScale tests that kScoreScale is only applied when totalDowncompactBytes > 0
+func TestDynamicModeKScoreScale(t *testing.T) {
+	config := DefaultConfig()
+	config.NumLevels = 3
+	config.MaxBytesForLevelBaseMB = 256
+	config.LevelCompactionDynamicLevelBytes = true // Enable dynamic mode
+
+	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+
+	// Setup: L1 = 300MB (exceeds 256MB target)
+	tree.Levels[1].AddSize(300.0, 1.0)
+
+	// Case 1: No incoming data from upper levels
+	// Should use simple ratio (no kScoreScale)
+	scoreNoDowncompact := tree.calculateCompactionScore(1, config, 0.0)
+	expectedSimple := 300.0 / 256.0 // 1.17
+	tolerance := 0.01
+	if scoreNoDowncompact < expectedSimple-tolerance || scoreNoDowncompact > expectedSimple+tolerance {
+		t.Errorf("Dynamic mode with no downcompact: expected %.2f, got %.2f", expectedSimple, scoreNoDowncompact)
+	}
+
+	// Case 2: With incoming data from upper levels
+	// Should use kScoreScale formula: size / (target + downcompact) * 10.0
+	totalDowncompactBytes := 100.0
+	scoreWithDowncompact := tree.calculateCompactionScore(1, config, totalDowncompactBytes)
+	expectedWithScale := (300.0 / (256.0 + 100.0)) * 10.0 // ~8.43
+	if scoreWithDowncompact < expectedWithScale-tolerance || scoreWithDowncompact > expectedWithScale+tolerance {
+		t.Errorf("Dynamic mode with downcompact: expected %.2f, got %.2f", expectedWithScale, scoreWithDowncompact)
+	}
+
+	// Verify that kScoreScale makes the score higher (keeps it > 1.0)
+	// Without kScoreScale, score would be 300/(256+100) = 0.84, which is < 1.0
+	// With kScoreScale, score is ~8.43, which is > 1.0
+	if scoreWithDowncompact < 1.0 {
+		t.Errorf("Dynamic mode kScoreScale should keep score > 1.0, got %.2f", scoreWithDowncompact)
+	}
+
+	// Case 3: Level under target should NOT apply kScoreScale even with downcompact
+	tree2 := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+	tree2.Levels[1].AddSize(200.0, 1.0) // Under 256MB target
+	scoreUnderTarget := tree2.calculateCompactionScore(1, config, 100.0)
+	expectedUnderTarget := 200.0 / 256.0 // 0.78 (simple ratio)
+	if scoreUnderTarget < expectedUnderTarget-tolerance || scoreUnderTarget > expectedUnderTarget+tolerance {
+		t.Errorf("Dynamic mode under target: expected %.2f, got %.2f", expectedUnderTarget, scoreUnderTarget)
+	}
+}
+
+// TestStaticModeScoring tests that static mode uses simple ratio without kScoreScale
+func TestStaticModeScoring(t *testing.T) {
+	config := DefaultConfig()
+	config.NumLevels = 3
+	config.MaxBytesForLevelBaseMB = 256
+	config.LevelCompactionDynamicLevelBytes = false // Static mode (default)
+
+	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+
+	tests := []struct {
+		name          string
+		levelSize     float64
+		expectedScore float64
+	}{
+		{
+			name:          "Under target",
+			levelSize:     200.0,
+			expectedScore: 200.0 / 256.0, // 0.78
+		},
+		{
+			name:          "At target",
+			levelSize:     256.0,
+			expectedScore: 1.0,
+		},
+		{
+			name:          "Over target",
+			levelSize:     300.0,
+			expectedScore: 300.0 / 256.0, // 1.17
+		},
+		{
+			name:          "2x over target",
+			levelSize:     512.0,
+			expectedScore: 512.0 / 256.0, // 2.0
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree.Levels[1].TotalSize = tt.levelSize
+			tree.Levels[1].CompactingSize = 0
+
+			score := tree.calculateCompactionScore(1, config, 0.0)
+
+			tolerance := 0.01
+			if score < tt.expectedScore-tolerance || score > tt.expectedScore+tolerance {
+				t.Errorf("Expected score %.2f, got %.2f", tt.expectedScore, score)
+			}
+
+			// Static mode: score should always be simple ratio (never >= 10.0 for these inputs)
+			if score >= 10.0 {
+				t.Errorf("Static mode should not apply kScoreScale, got %.2f", score)
+			}
+		})
+	}
+
+	// TODO(fidelity): Add dynamic mode scoring tests when full CalculateBaseBytes is implemented
+}
+
+// TestCalculateTotalDowncompactBytes tests the helper function
+func TestCalculateTotalDowncompactBytes(t *testing.T) {
+	config := DefaultConfig()
+	config.NumLevels = 4
+	config.MaxBytesForLevelBaseMB = 256
+	config.LevelMultiplier = 10
+
+	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+
+	// Targets: L1=256, L2=2560, L3=25600
+	// Add data exceeding targets:
+	tree.Levels[1].AddSize(300.0, 1.0)   // Exceeds by 44MB
+	tree.Levels[2].AddSize(3000.0, 1.0)  // Exceeds by 440MB
+	tree.Levels[3].AddSize(20000.0, 1.0) // Under target
+
+	totalDowncompact := calculateTotalDowncompactBytes(tree, config)
+
+	// Expected: 44 + 440 = 484MB (L3 is under target, doesn't contribute)
+	expectedTotal := (300.0 - 256.0) + (3000.0 - 2560.0)
+	tolerance := 0.01
+	if totalDowncompact < expectedTotal-tolerance || totalDowncompact > expectedTotal+tolerance {
+		t.Errorf("Expected total_downcompact_bytes %.2f, got %.2f", expectedTotal, totalDowncompact)
 	}
 }

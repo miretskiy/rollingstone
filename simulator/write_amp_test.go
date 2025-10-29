@@ -147,7 +147,7 @@ func TestReductionFactorApplication(t *testing.T) {
 			config.CompactionReductionFactor = tt.reductionFactor
 
 			lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
-			compactor := NewLeveledCompactor()
+			compactor := NewLeveledCompactor(0)
 
 			// Create source files
 			for i := 0; i < 2; i++ {

@@ -49,7 +49,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		diskBusyUntil:          0,
 		numImmutableMemtables:  0,
 		immutableMemtableSizes: make([]float64, 0),
-		compactor:              NewLeveledCompactor(),
+		compactor:              NewLeveledCompactor(config.RandomSeed),
 		activeCompactions:      make(map[int]bool),
 		activeCompactionInfos:  make([]*ActiveCompactionInfo, 0),
 		pendingCompactions:     make(map[int]*CompactionJob),
@@ -220,9 +220,8 @@ func (s *Simulator) populateLevel(level int, sizeMB float64) {
 			currentFileSize = remainingSize
 		}
 
-		file := s.lsm.CreateSSTFile(level, currentFileSize, 0) // Created at t=0
-		s.lsm.Levels[level].AddFile(file)
-		s.lsm.TotalSizeMB += currentFileSize
+		// CreateSSTFile already adds the file to the level and updates TotalSizeMB
+		s.lsm.CreateSSTFile(level, currentFileSize, 0) // Created at t=0
 		remainingSize -= currentFileSize
 	}
 }

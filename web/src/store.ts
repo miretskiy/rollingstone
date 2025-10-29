@@ -51,15 +51,17 @@ export const useStore = create<AppStore>((set, get) => ({
         maxBytesForLevelBaseMB: 256,
         levelMultiplier: 10,
         targetFileSizeMB: 64,
+        targetFileSizeMultiplier: 1,
         compactionReductionFactor: 0.9,
         maxBackgroundJobs: 2,
         maxSubcompactions: 1,
         maxCompactionBytesMB: 1600,
-        ioLatencyMs: 5,
-        ioThroughputMBps: 500,
+        ioLatencyMs: 1,
+        ioThroughputMBps: 125,
         numLevels: 7,
         initialLSMSizeMB: 0,
         simulationSpeedMultiplier: 1,
+        randomSeed: 0,
     },
     currentMetrics: null,
     metricsHistory: [],
@@ -166,9 +168,10 @@ export const useStore = create<AppStore>((set, get) => ({
             switch (message.type) {
                 case 'status':
                     // console.log('Status update:', message);
+                    // Only update running state, NOT config
+                    // Config should only flow UI -> backend, never backend -> UI
                     set({
                         isRunning: message.running,
-                        config: message.config,
                     });
                     break;
 

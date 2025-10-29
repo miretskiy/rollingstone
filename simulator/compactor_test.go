@@ -108,7 +108,7 @@ func TestPickOverlapCount(t *testing.T) {
 }
 
 func TestLeveledCompactorNeedsCompaction(t *testing.T) {
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	config := SimConfig{
 		NumLevels:                 7,
@@ -171,7 +171,7 @@ func TestLeveledCompactorNeedsCompaction(t *testing.T) {
 }
 
 func TestLeveledCompactorPickCompaction(t *testing.T) {
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	config := SimConfig{
 		NumLevels:                 7,
@@ -257,7 +257,7 @@ func TestLeveledCompactorPickCompaction(t *testing.T) {
 }
 
 func TestLeveledCompactorExecuteCompaction(t *testing.T) {
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	config := SimConfig{
 		NumLevels:                 7,
@@ -363,7 +363,7 @@ func TestMaxCompactionBytesDefault(t *testing.T) {
 		L0CompactionTrigger:  10, // High threshold to avoid intra-L0
 	}
 	lsm := NewLSMTree(3, 64.0)
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	// Add 20 files to L0, each 100 MB (total 2000 MB > 1600 MB limit)
 	for i := 0; i < 20; i++ {
@@ -415,7 +415,7 @@ func TestIntraL0RespectsMaxCompactionBytes(t *testing.T) {
 		L0CompactionTrigger:  4,   // Intra-L0 triggers at 4+2=6 files
 	}
 	lsm := NewLSMTree(3, 64.0)
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	// Add 10 files to L0, each 100 MB (total 1000 MB)
 	for i := 0; i < 10; i++ {
@@ -467,7 +467,7 @@ func TestTargetFileSizePerLevel(t *testing.T) {
 		L0CompactionTrigger:       100,   // Prevent intra-L0
 	}
 	lsm := NewLSMTree(5, 64.0)
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	// We'll directly test the file splitting logic by creating large compactions
 	// and verifying the output file count matches the expected target file size
@@ -553,7 +553,7 @@ func TestTrivialMove(t *testing.T) {
 		L0CompactionTrigger:       100, // Prevent intra-L0
 	}
 	lsm := NewLSMTree(3, 64.0)
-	compactor := NewLeveledCompactor()
+	compactor := NewLeveledCompactor(0)
 
 	// Add a single file to L1 (no files in L2, so no overlap)
 	lsm.Levels[1].AddSize(100, 0)

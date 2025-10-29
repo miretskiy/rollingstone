@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"time"
 )
 
 // filePicker interface for selecting files (internal to compactor)
@@ -92,16 +93,26 @@ type CompactionJob struct {
 type LeveledCompactor struct {
 	fileSelectDist    filePicker // For picking files from source level
 	overlapSelectDist filePicker // For estimating overlaps in target level
+	rng               *rand.Rand // Random number generator for file selection
 }
 
 // NewLeveledCompactor creates a compactor with default distributions
 // Distribution choices model typical RocksDB workload characteristics:
 // - Geometric for file selection: usually pick 1-2 files, occasionally more
 // - Exponential for overlaps: most compactions touch few files, rare massive overlaps
-func NewLeveledCompactor() *LeveledCompactor {
+// If seed is 0, uses a time-based random seed
+func NewLeveledCompactor(seed int64) *LeveledCompactor {
+	var rng *rand.Rand
+	if seed == 0 {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	} else {
+		rng = rand.New(rand.NewSource(seed))
+	}
+
 	return &LeveledCompactor{
 		fileSelectDist:    newDistributionAdapter(DistGeometric),   // Favor picking fewer files
 		overlapSelectDist: newDistributionAdapter(DistExponential), // Most overlaps are small
+		rng:               rng,
 	}
 }
 

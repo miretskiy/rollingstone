@@ -1,68 +1,47 @@
 #!/bin/bash
-# RollingStone Unified Startup Script
-# Builds frontend and backend, then starts the server
-#
-# Usage:
-#   ./start.sh              # Build frontend and backend (default)
-#   ./start.sh --skip-ui    # Skip frontend rebuild (faster for backend-only changes)
+set -e  # Exit on any error
 
-set -e  # Exit on error
+echo "🚀 Starting RollingStone..."
+echo ""
 
-# Colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+# Clean up any existing processes on port 8080
+echo "🧹 Cleaning up existing processes on port 8080..."
+lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
+sleep 1
+echo "✅ Port 8080 is free"
+echo ""
 
-# Parse arguments
-SKIP_UI=false
-if [ "$1" == "--skip-ui" ]; then
-    SKIP_UI=true
-fi
+# Build everything
+./build.sh
+echo ""
 
-echo -e "${GREEN}🚀 Starting RollingStone...${NC}"
+# Start server in background
+echo "🌟 Starting server in background..."
+./rollingstone > server.log 2>&1 &
+SERVER_PID=$!
 
-# Kill any existing server instances
-echo -e "${YELLOW}🔍 Checking for existing server...${NC}"
-EXISTING_PID=$(lsof -ti:8080 2>/dev/null || true)
-if [ -n "$EXISTING_PID" ]; then
-    echo -e "${YELLOW}🛑 Killing existing server (PID: $EXISTING_PID)...${NC}"
-    kill -9 $EXISTING_PID 2>/dev/null || true
-    sleep 1
-    echo -e "${GREEN}✅ Existing server stopped${NC}"
-else
-    echo -e "${GREEN}✅ No existing server found${NC}"
-fi
+# Wait for server to be ready (max 10 seconds)
+echo "⏳ Waiting for server to start..."
+MAX_WAIT=10
+WAITED=0
+while [ $WAITED -lt $MAX_WAIT ]; do
+  if curl -s http://localhost:8080 | grep -q "RollingStone" 2>/dev/null; then
+    echo "✅ Server started successfully!"
+    echo ""
+    echo "🌐 Server running at: http://localhost:8080"
+    echo "📊 Server PID: $SERVER_PID"
+    echo "📝 Server logs: tail -f server.log"
+    echo "🛑 To stop: kill $SERVER_PID  OR  curl http://localhost:8080/quitquitquit"
+    echo ""
+    exit 0
+  fi
+  sleep 0.5
+  WAITED=$((WAITED + 1))
+done
 
-# Build or check frontend
-if [ "$SKIP_UI" = true ]; then
-    if [ ! -d "web/dist" ]; then
-        echo -e "${RED}❌ Frontend not built and --skip-ui specified. Run without --skip-ui first.${NC}"
-        exit 1
-    fi
-    echo -e "${YELLOW}⏭️  Skipping frontend rebuild (using existing web/dist)${NC}"
-else
-    echo -e "${YELLOW}🔨 Building frontend...${NC}"
-    cd web
-    
-    # Check if node_modules exists
-    if [ ! -d "node_modules" ]; then
-        echo -e "${YELLOW}📦 Installing frontend dependencies...${NC}"
-        npm install
-    fi
-    
-    npm run build
-    cd ..
-    echo -e "${GREEN}✅ Frontend built successfully${NC}"
-fi
-
-# Build Go backend
-echo -e "${YELLOW}🔨 Building backend...${NC}"
-go build -o /tmp/rollingstone cmd/server/main.go
-echo -e "${GREEN}✅ Backend built successfully${NC}"
-
-# Start server
-echo -e "${GREEN}🌟 Starting RollingStone server on http://localhost:8080${NC}"
-echo -e "${YELLOW}Press Ctrl+C to stop, or visit http://localhost:8080/quitquitquit${NC}"
-/tmp/rollingstone
-
+# Server failed to start
+echo "❌ Server failed to start within ${MAX_WAIT} seconds"
+echo "📝 Check server.log for errors:"
+tail -20 server.log
+kill $SERVER_PID 2>/dev/null || true
+exit 1

@@ -28,8 +28,9 @@ type SimConfig struct {
 	LevelCompactionDynamicLevelBytes bool    `json:"levelCompactionDynamicLevelBytes"` // level_compaction_dynamic_level_bytes (default false for intuition, true in RocksDB 8.6+)
 
 	// Simulation Control
-	InitialLSMSizeMB          int `json:"initialLSMSizeMB"`          // Pre-populate LSM with this much data (0 = start empty, useful for skipping warmup)
-	SimulationSpeedMultiplier int `json:"simulationSpeedMultiplier"` // Process N events per step (1 = real-time feel, 10 = 10x faster)
+	InitialLSMSizeMB          int   `json:"initialLSMSizeMB"`          // Pre-populate LSM with this much data (0 = start empty, useful for skipping warmup)
+	SimulationSpeedMultiplier int   `json:"simulationSpeedMultiplier"` // Process N events per step (1 = real-time feel, 10 = 10x faster)
+	RandomSeed                int64 `json:"randomSeed"`                // Random seed for reproducibility (0 = use time-based seed)
 }
 
 // DefaultConfig returns sensible defaults based on RocksDB documentation
@@ -47,12 +48,13 @@ func DefaultConfig() SimConfig {
 		MaxBackgroundJobs:                2,     // 2 parallel compactions (RocksDB default)
 		MaxSubcompactions:                1,     // No intra-compaction parallelism (RocksDB default)
 		MaxCompactionBytesMB:             1600,  // 25x target_file_size_base (RocksDB typical default)
-		IOLatencyMs:                      5.0,   // 5ms seek time (typical SSD)
-		IOThroughputMBps:                 500.0, // 500 MB/s throughput (typical SSD)
+		IOLatencyMs:                      1.0,   // ~1ms latency (EBS gp3 baseline)
+		IOThroughputMBps:                 125.0, // 125 MB/s throughput (EBS gp3 baseline)
 		NumLevels:                        7,     // 7 levels (RocksDB default)
 		LevelCompactionDynamicLevelBytes: false, // false for more intuitive level sizing
 		InitialLSMSizeMB:                 0,     // 0 = start empty
 		SimulationSpeedMultiplier:        1,     // 1 = process 1 event per step (real-time feel)
+		RandomSeed:                       0,     // 0 = use time-based random seed
 	}
 }
 
@@ -71,12 +73,14 @@ func ThreeLevelConfig() SimConfig {
 		CompactionReductionFactor:        0.9,   // 10% reduction
 		MaxBackgroundJobs:                2,     // 2 parallel compactions
 		MaxSubcompactions:                1,     // No intra-compaction parallelism
-		IOLatencyMs:                      5.0,   // 5ms seek time
-		IOThroughputMBps:                 500.0, // 500 MB/s throughput
+		MaxCompactionBytesMB:             1600,  // 25x target_file_size_base
+		IOLatencyMs:                      1.0,   // ~1ms latency (EBS gp3 baseline)
+		IOThroughputMBps:                 125.0, // 125 MB/s throughput (EBS gp3 baseline)
 		NumLevels:                        3,     // Only 3 levels: Memtable, L0, L1
 		LevelCompactionDynamicLevelBytes: false, // false for more intuitive level sizing
 		InitialLSMSizeMB:                 0,     // 0 = start empty
 		SimulationSpeedMultiplier:        1,     // 1 = process 1 event per step
+		RandomSeed:                       0,     // 0 = use time-based random seed
 	}
 }
 

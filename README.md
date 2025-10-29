@@ -4,25 +4,20 @@ A **discrete event simulator** for RocksDB LSM trees, built with Go backend and 
 
 ## Quick Start
 
-**One command to rule them all:**
-
 ```bash
 ./start.sh
-# Automatically builds frontend (if needed) and starts backend
-# Open browser to http://localhost:8080
 ```
 
-**Manual mode:**
+This single command:
+1. Cleans up port 8080
+2. Builds frontend (npm) + backend (Go)
+3. Starts server on http://localhost:8080
 
+Press **Ctrl+C** to stop, or visit http://localhost:8080/quitquitquit
+
+**Build without running:**
 ```bash
-# Build frontend once
-cd web && npm install && npm run build && cd ..
-
-# Build and run backend
-go build -o /tmp/rollingstone cmd/server/main.go
-/tmp/rollingstone
-
-# Open browser to http://localhost:8080
+./build.sh
 ```
 
 ## What It Does
@@ -89,16 +84,15 @@ rollingstone/
 
 ### Requirements
 - Go 1.21+
-- Node.js 18+ (for frontend development)
+- Node.js 18+
 
-### Build
+### Running
 ```bash
-# Backend
-go build -o /tmp/rollingstone cmd/server/main.go
-
-# Frontend (development)
-cd web && npm install && npm run dev
+./start.sh          # Build + run (one command)
+./build.sh          # Build only (frontend + backend)
 ```
+
+**Note**: We serve the React app as static files from the Go server. No separate npm dev server needed.
 
 ### Documentation
 - **[Architecture & Protocol](docs/ARCHITECTURE.md)**: System design, WebSocket protocol, deployment

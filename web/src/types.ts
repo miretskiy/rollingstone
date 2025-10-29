@@ -7,6 +7,7 @@ export interface SimulationConfig {
     maxBytesForLevelBaseMB: number;
     levelMultiplier: number;
     targetFileSizeMB: number;
+    targetFileSizeMultiplier: number;
     compactionReductionFactor: number;
     maxBackgroundJobs: number;
     maxSubcompactions: number;
@@ -16,6 +17,7 @@ export interface SimulationConfig {
     numLevels: number;
     initialLSMSizeMB: number;
     simulationSpeedMultiplier: number;
+    randomSeed: number;
 }
 
 export interface CompactionStats {

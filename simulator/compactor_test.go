@@ -291,32 +291,32 @@ func TestLeveledCompactorExecuteCompaction(t *testing.T) {
 			TargetFiles: targetFiles,
 		}
 
-	inputSize, outputSize, outputFileCount := compactor.ExecuteCompaction(job, lsm, config, 10.0)
+		inputSize, outputSize, outputFileCount := compactor.ExecuteCompaction(job, lsm, config, 10.0)
 
-	if inputSize != 192 { // 3 files * 64 MB
+		if inputSize != 192 { // 3 files * 64 MB
 			t.Errorf("Expected inputSize=192, got %.1f", inputSize)
 		}
 
-	// Output should be reduced by compaction factor (0.9 for L0->L1)
-	expectedOutput := 192 * 0.9
-	if outputSize != expectedOutput {
-		t.Errorf("Expected outputSize=%.1f, got %.1f", expectedOutput, outputSize)
-	}
+		// Output should be reduced by compaction factor (0.9 for L0->L1)
+		expectedOutput := 192 * 0.9
+		if outputSize != expectedOutput {
+			t.Errorf("Expected outputSize=%.1f, got %.1f", expectedOutput, outputSize)
+		}
 
-	// Check output file count: 172.8 MB / 64 MB = 2.7, ceil = 3 files
-	expectedOutputFiles := 3
-	if outputFileCount != expectedOutputFiles {
-		t.Errorf("Expected outputFileCount=%d, got %d", expectedOutputFiles, outputFileCount)
-	}
+		// Check output file count: 172.8 MB / 64 MB = 2.7, ceil = 3 files
+		expectedOutputFiles := 3
+		if outputFileCount != expectedOutputFiles {
+			t.Errorf("Expected outputFileCount=%d, got %d", expectedOutputFiles, outputFileCount)
+		}
 
-	// Check that files were removed from source level
-	if lsm.Levels[0].FileCount != 0 {
-		t.Errorf("Expected L0 FileCount=0, got %d", lsm.Levels[0].FileCount)
-	}
+		// Check that files were removed from source level
+		if lsm.Levels[0].FileCount != 0 {
+			t.Errorf("Expected L0 FileCount=0, got %d", lsm.Levels[0].FileCount)
+		}
 
-	// Check that files were added to target level (split into multiple files)
-	if lsm.Levels[1].FileCount == 0 {
-		t.Error("Expected files in L1")
+		// Check that files were added to target level (split into multiple files)
+		if lsm.Levels[1].FileCount == 0 {
+			t.Error("Expected files in L1")
 		}
 
 		t.Logf("Compaction: %.1f MB -> %.1f MB, resulting in %d L1 files",
@@ -343,9 +343,9 @@ func TestLeveledCompactorExecuteCompaction(t *testing.T) {
 			TargetFiles: targetFiles,
 		}
 
-	_, outputSize, _ := compactor.ExecuteCompaction(job, lsm, config, 10.0)
+		_, outputSize, _ := compactor.ExecuteCompaction(job, lsm, config, 10.0)
 
-	// L1+ should use 0.99 reduction factor
+		// L1+ should use 0.99 reduction factor
 		// Input: 256 + 50 = 306 MB, Output: 306 * 0.99 = 302.94 MB
 		expectedOutput := (256 + 50) * 0.99
 		if outputSize != expectedOutput {

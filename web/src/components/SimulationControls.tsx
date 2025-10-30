@@ -23,9 +23,6 @@ export function SimulationControls() {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  // ConfigInput now reads directly from store, so just pass it through
-  const Input = ConfigInput;
-
   const handleConfigChange = (field: keyof SimulationConfig, value: number) => {
     updateConfig({ [field]: value });
   };
@@ -96,17 +93,17 @@ export function SimulationControls() {
           {expandedSections.lsm && (
             <div className="p-3 bg-dark-card">
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <Input label="Memtable Flush Size" field="memtableFlushSizeMB" min={1} max={512} unit="MB"
+                <ConfigInput label="Memtable Flush Size" field="memtableFlushSizeMB" min={1} max={512} unit="MB"
                   tooltip="Size at which memtable is flushed to L0" />
-                <Input label="Max Immutable Memtables" field="maxWriteBufferNumber" min={1} max={10}
+                <ConfigInput label="Max Immutable Memtables" field="maxWriteBufferNumber" min={1} max={10}
                   tooltip="Max number of memtables before write stall" />
-                <Input label="L0 Compaction Trigger" field="l0CompactionTrigger" min={2} max={20} unit="files"
+                <ConfigInput label="L0 Compaction Trigger" field="l0CompactionTrigger" min={2} max={20} unit="files"
                   tooltip="Number of L0 files that trigger compaction" />
-                <Input label="Level Size Multiplier" field="levelMultiplier" min={2} max={100}
+                <ConfigInput label="Level Size Multiplier" field="levelMultiplier" min={2} max={100}
                   tooltip="Size multiplier between levels (default: 10)" />
-                <Input label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
+                <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
                   tooltip="Max concurrent compaction jobs" />
-                <Input label="Number of Levels" field="numLevels" min={2} max={10}
+                <ConfigInput label="Number of Levels" field="numLevels" min={2} max={10}
                   tooltip="Total number of LSM levels (including L0)" />
               </div>
 
@@ -124,15 +121,15 @@ export function SimulationControls() {
                 {expandedSections.lsmAdvanced && (
                   <div className="p-2 bg-dark-card">
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                      <Input label="Max Bytes for Level Base" field="maxBytesForLevelBaseMB" min={64} max={2048} unit="MB"
+                      <ConfigInput label="Max Bytes for Level Base" field="maxBytesForLevelBaseMB" min={64} max={2048} unit="MB"
                         tooltip="Target size for L1 (RocksDB: max_bytes_for_level_base)" />
-                      <Input label="Target SST File Size" field="targetFileSizeMB" min={1} max={512} unit="MB"
+                      <ConfigInput label="Target SST File Size" field="targetFileSizeMB" min={1} max={512} unit="MB"
                         tooltip="Target size for individual SST files (RocksDB: target_file_size_base)" />
-                      <Input label="File Size Multiplier" field="targetFileSizeMultiplier" min={1} max={10}
+                      <ConfigInput label="File Size Multiplier" field="targetFileSizeMultiplier" min={1} max={10}
                         tooltip="SST file size multiplier per level (RocksDB: target_file_size_multiplier)" />
-                      <Input label="Max Compaction Bytes" field="maxCompactionBytesMB" min={100} max={10000} unit="MB"
+                      <ConfigInput label="Max Compaction Bytes" field="maxCompactionBytesMB" min={100} max={10000} unit="MB"
                         tooltip="Max total input size for single compaction (RocksDB: max_compaction_bytes)" />
-                      <Input label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
+                      <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
                         tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions)" />
                     </div>
                   </div>
@@ -155,9 +152,9 @@ export function SimulationControls() {
           {expandedSections.workload && (
             <div className="p-3 bg-dark-card">
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <Input label="Write Rate" field="writeRateMBps" min={0} max={1000} unit="MB/s"
+                <ConfigInput label="Write Rate" field="writeRateMBps" min={0} max={1000} unit="MB/s"
                   tooltip="Incoming write throughput (0 = no writes)" />
-                <Input label="Deduplication Factor" field="compactionReductionFactor" min={0.1} max={1.0}
+                <ConfigInput label="Deduplication Factor" field="compactionReductionFactor" min={0.1} max={1.0}
                   tooltip="Data reduction during compaction (0.9 = 10% reduction)" />
               </div>
             </div>
@@ -184,10 +181,10 @@ export function SimulationControls() {
                   isSelected={Math.abs(ioLatency - 0.1) < 0.01 && Math.abs(ioThroughput - 3500) < 1}
                 />
                 <PresetButton
-                  label="SATA SSD"
-                  onClick={() => { handleConfigChange('ioLatencyMs', 0.5); handleConfigChange('ioThroughputMBps', 550); }}
+                  label="SATA"
+                  onClick={() => { handleConfigChange('ioLatencyMs', 0.2); handleConfigChange('ioThroughputMBps', 500); }}
                   disabled={!isConnected || isRunning}
-                  isSelected={Math.abs(ioLatency - 0.5) < 0.01 && Math.abs(ioThroughput - 550) < 1}
+                  isSelected={Math.abs(ioLatency - 0.2) < 0.01 && Math.abs(ioThroughput - 500) < 1}
                 />
                 <PresetButton
                   label="EBS gp3"
@@ -203,9 +200,9 @@ export function SimulationControls() {
                 />
               </div>
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <Input label="I/O Latency" field="ioLatencyMs" min={0.1} max={50} unit="ms"
+                <ConfigInput label="I/O Latency" field="ioLatencyMs" min={0.1} max={50} unit="ms"
                   tooltip="Disk operation latency" />
-                <Input label="I/O Throughput" field="ioThroughputMBps" min={10} max={10000} unit="MB/s"
+                <ConfigInput label="I/O Throughput" field="ioThroughputMBps" min={10} max={10000} unit="MB/s"
                   tooltip="Max disk bandwidth (shared by all operations)" />
               </div>
             </div>
@@ -225,11 +222,11 @@ export function SimulationControls() {
           {expandedSections.simulation && (
             <div className="p-3 bg-dark-card">
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <Input label="Simulation Speed" field="simulationSpeedMultiplier" min={1} max={100} unit="x"
+                <ConfigInput label="Simulation Speed" field="simulationSpeedMultiplier" min={1} max={100} unit="x"
                   tooltip="Speed multiplier for fast-forward simulation" />
-                <Input label="Initial LSM Size" field="initialLSMSizeMB" min={0} max={100000} unit="MB"
+                <ConfigInput label="Initial LSM Size" field="initialLSMSizeMB" min={0} max={100000} unit="MB"
                   tooltip="⚠️ Pre-populate LSM tree (requires reset)" />
-                <Input label="Random Seed" field="randomSeed" min={0} max={999999}
+                <ConfigInput label="Random Seed" field="randomSeed" min={0} max={999999}
                   tooltip="Random seed for reproducibility (0 = random)" />
               </div>
             </div>

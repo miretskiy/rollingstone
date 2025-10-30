@@ -13,6 +13,7 @@
     "lucide-react": "^0.547.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-lazylog": "^4.5.3",
     "recharts": "^3.3.0",
     "zustand": "^5.0.8"
   },
@@ -22,6 +23,7 @@
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
+    "@types/react-lazylog": "^4.5.4",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "eslint": "^9.36.0",

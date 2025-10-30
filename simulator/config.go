@@ -48,13 +48,13 @@ func DefaultConfig() SimConfig {
 		MaxBackgroundJobs:                2,     // 2 parallel compactions (RocksDB default)
 		MaxSubcompactions:                1,     // No intra-compaction parallelism (RocksDB default)
 		MaxCompactionBytesMB:             1600,  // 25x target_file_size_base (RocksDB typical default)
-		IOLatencyMs:                      1.0,   // ~1ms latency (EBS gp3 baseline)
+		IOLatencyMs:                      1.0,   // 1ms latency (EBS gp3 baseline)
 		IOThroughputMBps:                 125.0, // 125 MB/s throughput (EBS gp3 baseline)
 		NumLevels:                        7,     // 7 levels (RocksDB default)
 		LevelCompactionDynamicLevelBytes: false, // false for more intuitive level sizing
 		InitialLSMSizeMB:                 0,     // 0 = start empty
 		SimulationSpeedMultiplier:        1,     // 1 = process 1 event per step (real-time feel)
-		RandomSeed:                       0,     // 0 = use time-based random seed
+		RandomSeed:                       0,     // 0 = use time-based seed
 	}
 }
 
@@ -73,14 +73,13 @@ func ThreeLevelConfig() SimConfig {
 		CompactionReductionFactor:        0.9,   // 10% reduction
 		MaxBackgroundJobs:                2,     // 2 parallel compactions
 		MaxSubcompactions:                1,     // No intra-compaction parallelism
-		MaxCompactionBytesMB:             1600,  // 25x target_file_size_base
-		IOLatencyMs:                      1.0,   // ~1ms latency (EBS gp3 baseline)
-		IOThroughputMBps:                 125.0, // 125 MB/s throughput (EBS gp3 baseline)
+		IOLatencyMs:                      5.0,   // 5ms seek time
+		IOThroughputMBps:                 500.0, // 500 MB/s throughput
 		NumLevels:                        3,     // Only 3 levels: Memtable, L0, L1
 		LevelCompactionDynamicLevelBytes: false, // false for more intuitive level sizing
 		InitialLSMSizeMB:                 0,     // 0 = start empty
 		SimulationSpeedMultiplier:        1,     // 1 = process 1 event per step
-		RandomSeed:                       0,     // 0 = use time-based random seed
+		RandomSeed:                       0,     // 0 = use time-based seed
 	}
 }
 

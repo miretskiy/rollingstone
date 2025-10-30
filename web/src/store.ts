@@ -22,6 +22,7 @@ interface AppStore {
     metricsHistory: SimulationMetrics[];
     currentState: SimulationState | null;
     events: SimulationEvent[];
+    logs: string[];
 
     // Actions
     connect: (url: string) => void;
@@ -47,11 +48,12 @@ export const useStore = create<AppStore>((set, get) => ({
         writeRateMBps: 10,
         memtableFlushSizeMB: 64,
         maxWriteBufferNumber: 2,
+        memtableFlushTimeoutSec: 300,
         l0CompactionTrigger: 4,
         maxBytesForLevelBaseMB: 256,
         levelMultiplier: 10,
         targetFileSizeMB: 64,
-        targetFileSizeMultiplier: 1,
+        targetFileSizeMultiplier: 2,
         compactionReductionFactor: 0.9,
         maxBackgroundJobs: 2,
         maxSubcompactions: 1,
@@ -67,6 +69,7 @@ export const useStore = create<AppStore>((set, get) => ({
     metricsHistory: [],
     currentState: null,
     events: [],
+    logs: [],
 
     // Connection management
     connect: (url: string) => {
@@ -142,6 +145,7 @@ export const useStore = create<AppStore>((set, get) => ({
             isRunning: false,
             metricsHistory: [],
             events: [],
+            logs: [],
             currentMetrics: null,
             currentState: null,
         });
@@ -168,17 +172,10 @@ export const useStore = create<AppStore>((set, get) => ({
             switch (message.type) {
                 case 'status':
                     // console.log('Status update:', message);
-                    // Only update running state, NOT config
-                    // Config should only flow UI -> backend, never backend -> UI
                     set({
                         isRunning: message.running,
+                        config: message.config,
                     });
-                    break;
-
-                case 'error':
-                    console.error('❌ Server error:', message.error);
-                    // Show error to user - you could add a toast/notification here
-                    alert(`Configuration error: ${message.error}`);
                     break;
 
                 case 'metrics':
@@ -200,6 +197,18 @@ export const useStore = create<AppStore>((set, get) => ({
                     set((state) => ({
                         events: [message.event, ...state.events].slice(0, 50),
                     }));
+                    break;
+
+                case 'log':
+                    // Handle batched log messages (may contain multiple lines)
+                    if (message.log) {
+                        const logLines = message.log.split('\n').filter(line => line.trim());
+                        set((state) => {
+                            const newLogs = [...state.logs, ...logLines];
+                            // Keep ring buffer of 1000 entries
+                            return { logs: newLogs.slice(-1000) };
+                        });
+                    }
                     break;
 
                 default:

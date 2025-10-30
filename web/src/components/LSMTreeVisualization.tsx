@@ -93,13 +93,13 @@ function Level({ level, compactionInfos, compactionsSinceUpdate }: LevelProps) {
                             <span>•</span>
                             <span>
                                 {formatSize(level.totalSizeMB)}
-                                {level.level > 0 && level.targetSizeMB > 0 && (
+                                {level.level > 0 && level.targetSizeMB !== undefined && level.targetSizeMB > 0 && (
                                     <span className="text-gray-500">
                                         {' '}/ {formatSize(level.targetSizeMB)} target
                                     </span>
                                 )}
                             </span>
-                            {level.level > 0 && level.targetSizeMB > 0 && (
+                            {level.level > 0 && level.targetSizeMB !== undefined && level.targetSizeMB > 0 && (
                                 <>
                                     <span>•</span>
                                     <span className={level.totalSizeMB > level.targetSizeMB ? 'text-yellow-400' : 'text-green-400'}>
@@ -133,7 +133,7 @@ function Level({ level, compactionInfos, compactionsSinceUpdate }: LevelProps) {
 }
 
 export function LSMTreeVisualization() {
-    const { currentState, currentMetrics } = useStore();
+    const { currentState, currentMetrics, config } = useStore();
 
     const formatSize = (mb: number) => {
         if (mb < 1024) return `${mb.toFixed(1)} MB`;
@@ -183,13 +183,16 @@ export function LSMTreeVisualization() {
                     <div className="flex-1">
                         <div className="text-lg font-bold text-green-400">Memtable (In-Memory)</div>
                         <div className="text-sm text-gray-400">
-                            Active: {formatSize(currentState.memtableCurrentSizeMB)} / 64 MB
+                            Active: {formatSize(currentState.memtableCurrentSizeMB)}
+                            {config && ` / ${formatSize(config.memtableFlushSizeMB)}`}
                         </div>
                     </div>
                     <div className="w-48 h-6 bg-dark-bg rounded-full overflow-hidden">
                         <div
                             className="h-full bg-green-500 rounded-full transition-all duration-300"
-                            style={{ width: `${(currentState.memtableCurrentSizeMB / 64) * 100}%` }}
+                            style={{ 
+                                width: `${config ? Math.min(100, (currentState.memtableCurrentSizeMB / config.memtableFlushSizeMB) * 100) : 0}%` 
+                            }}
                         />
                     </div>
                 </div>
@@ -197,8 +200,11 @@ export function LSMTreeVisualization() {
                 {currentState.numImmutableMemtables && currentState.numImmutableMemtables > 0 && (
                     <div className="mt-2 pt-2 border-t border-green-900/30">
                         <div className="flex items-center justify-between text-sm">
-                            <span className="text-yellow-400">
+                            <span className={`${currentState.numImmutableMemtables >= (config?.maxWriteBufferNumber || 2) ? 'text-red-400 font-bold' : 'text-yellow-400'}`}>
                                 ⏳ Immutable: {currentState.numImmutableMemtables} memtable{currentState.numImmutableMemtables > 1 ? 's' : ''} flushing
+                                {config && currentState.numImmutableMemtables >= config.maxWriteBufferNumber && (
+                                    <span className="ml-1">(STALLED)</span>
+                                )}
                             </span>
                             <span className="text-yellow-300 font-mono">
                                 {formatSize((currentState.immutableMemtableSizesMB || []).reduce((a, b) => a + b, 0))}

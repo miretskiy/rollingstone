@@ -3,6 +3,7 @@ export interface SimulationConfig {
     writeRateMBps: number;
     memtableFlushSizeMB: number;
     maxWriteBufferNumber: number;
+    memtableFlushTimeoutSec: number;
     l0CompactionTrigger: number;
     maxBytesForLevelBaseMB: number;
     levelMultiplier: number;
@@ -41,7 +42,7 @@ export interface SimulationMetrics {
     compactionThroughputMBps: number;
     totalWriteThroughputMBps: number;
     perLevelThroughputMBps: Record<number, number>;
-    compactionsSinceUpdate: Record<number, CompactionStats>;
+    compactionsSinceUpdate?: Record<number, CompactionStats>; // Per-level aggregate compaction activity
     inProgressCount?: number;
     inProgressDetails?: Array<{
         inputMB: number;
@@ -49,6 +50,10 @@ export interface SimulationMetrics {
         fromLevel: number;
         toLevel: number;
     }>;
+    stalledWriteCount?: number;
+    maxStalledWriteCount?: number;
+    stallDurationSeconds?: number;
+    isStalled?: boolean;
 }
 
 export interface SSTFile {
@@ -60,7 +65,7 @@ export interface SSTFile {
 export interface LevelState {
     level: number;
     totalSizeMB: number;
-    targetSizeMB: number;
+    targetSizeMB?: number;
     fileCount: number;
     files: SSTFile[];
 }
@@ -76,12 +81,12 @@ export interface ActiveCompactionInfo {
 export interface SimulationState {
     virtualTime: number;
     memtableCurrentSizeMB: number;
-    numImmutableMemtables?: number; // Count of frozen memtables waiting to flush
-    immutableMemtableSizesMB?: number[]; // Sizes of frozen memtables waiting to flush
     levels: LevelState[];
     totalSizeMB: number;
-    activeCompactions?: number[]; // Levels currently being compacted (simple list)
+    activeCompactions?: number[]; // Levels currently being compacted
     activeCompactionInfos?: ActiveCompactionInfo[]; // Detailed compaction info
+    numImmutableMemtables?: number; // Number of immutable memtables waiting to flush
+    immutableMemtableSizesMB?: number[]; // Sizes of immutable memtables waiting to flush
 }
 
 export interface SimulationEvent {
@@ -102,7 +107,7 @@ export type WSMessage =
     | { type: 'metrics'; metrics: SimulationMetrics }
     | { type: 'state'; state: SimulationState }
     | { type: 'event'; event: SimulationEvent }
-    | { type: 'error'; error: string };
+    | { type: 'log'; log: string };
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 

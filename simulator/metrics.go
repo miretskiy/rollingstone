@@ -51,6 +51,12 @@ type Metrics struct {
 	// Map of fromLevel -> stats for compactions that completed between UI updates
 	CompactionsSinceUpdate map[int]CompactionStats `json:"compactionsSinceUpdate"` // Per-level aggregate compaction activity
 
+	// Write stall metrics
+	StalledWriteCount    int     `json:"stalledWriteCount"`    // Current number of WriteEvents queued during stall
+	MaxStalledWriteCount int     `json:"maxStalledWriteCount"` // Peak stalled write count seen
+	StallDurationSeconds float64 `json:"stallDurationSeconds"` // Cumulative time spent in stall state
+	IsStalled            bool    `json:"isStalled"`            // Whether currently in write stall state
+
 	// Internal tracking
 	totalDiskWrittenMB float64         // Total bytes written to disk (including compaction)
 	logicalDataSizeMB  float64         // Estimated logical data size
@@ -86,6 +92,10 @@ func NewMetrics() *Metrics {
 		throughputWindow:         5.0,  // 5-second sliding window
 		smoothingAlpha:           0.2,  // Smooth over ~5 samples
 		isFirstSample:            true, // Initialize EMA with first sample
+		StalledWriteCount:        0,
+		MaxStalledWriteCount:      0,
+		StallDurationSeconds:     0,
+		IsStalled:                 false,
 	}
 }
 
@@ -332,12 +342,21 @@ func (m *Metrics) CapThroughput(maxThroughputMBps float64) {
 }
 
 // Update updates the timestamp and recalculates metrics
-func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int, diskBusyUntil float64, ioThroughputMBps float64) {
+func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int, diskBusyUntil float64, ioThroughputMBps float64,
+	isStalled bool, stalledWriteCount int) {
 	m.Timestamp = virtualTime
 	m.UpdateSpaceAmplification(lsmTree.TotalSizeMB)
 	m.UpdateReadAmplification(lsmTree, numMemtables)
 	m.calculateThroughput()
 	m.CapThroughput(ioThroughputMBps) // Enforce physical disk limits
+
+	// Update stall metrics
+	m.IsStalled = isStalled
+	m.StalledWriteCount = stalledWriteCount
+	if stalledWriteCount > m.MaxStalledWriteCount {
+		m.MaxStalledWriteCount = stalledWriteCount
+	}
+	// StallDurationSeconds is accumulated in processWrite, not here.
 
 	// Update in-progress activities for UI display
 	m.InProgressCount = len(m.inProgressWrites)

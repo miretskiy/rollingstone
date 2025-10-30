@@ -1,0 +1,146 @@
+2025/10/24 14:33:31 ✓ Loaded template: templates/index.html
+2025/10/24 14:33:31 🚀 Server starting on http://localhost:8080
+2025/10/24 14:33:31 📡 WebSocket endpoint: ws://localhost:8080/ws
+2025/10/24 14:33:31 🛑 Shutdown endpoint: http://localhost:8080/quitquitquit
+2025/10/24 14:33:32 Client connected
+2025/10/24 14:34:13 Client connected
+2025/10/24 14:34:13 Client connected
+2025/10/24 14:34:13 Client disconnected
+2025/10/24 14:34:14 Received command: start
+2025/10/24 14:34:14 Simulator started
+[UI] Starting UI update loop
+[UI] My goroutine is running, creating ticker
+[UI] Ticker created, entering select loop
+[UI] Top of loop, tickCount=0
+[DES] Starting DES loop
+[DES] Scheduled initial write, queue size: 1
+[DES] About to process event 1, queue size: 1
+[DES] Processed event #1, type: *simulator.WriteEvent, virtual time: 0.10, queue size: 1, memtable: 1.00 MB
+[DES] About to process event 2, queue size: 1
+[DES] Processed event #2, type: *simulator.WriteEvent, virtual time: 0.20, queue size: 1, memtable: 2.00 MB
+[DES] About to process event 3, queue size: 1
+[DES] Processed event #3, type: *simulator.WriteEvent, virtual time: 0.30, queue size: 1, memtable: 3.00 MB
+[DES] About to process event 4, queue size: 1
+[DES] Processed event #4, type: *simulator.WriteEvent, virtual time: 0.40, queue size: 1, memtable: 4.00 MB
+[DES] About to process event 5, queue size: 1
+[DES] Processed event #5, type: *simulator.WriteEvent, virtual time: 0.50, queue size: 1, memtable: 5.00 MB
+[DES] About to process event 6, queue size: 1
+[DES] Processed event #6, type: *simulator.WriteEvent, virtual time: 0.60, queue size: 1, memtable: 6.00 MB
+[DES] About to process event 7, queue size: 1
+[DES] Processed event #7, type: *simulator.WriteEvent, virtual time: 0.70, queue size: 1, memtable: 7.00 MB
+[DES] About to process event 8, queue size: 1
+[DES] Processed event #8, type: *simulator.WriteEvent, virtual time: 0.80, queue size: 1, memtable: 8.00 MB
+[DES] About to process event 9, queue size: 1
+[DES] Processed event #9, type: *simulator.WriteEvent, virtual time: 0.90, queue size: 1, memtable: 9.00 MB
+[DES] About to process event 10, queue size: 1
+[DES] Processed event #10, type: *simulator.WriteEvent, virtual time: 1.00, queue size: 1, memtable: 10.00 MB
+[DES] About to process event 11, queue size: 1
+[DES] Processed event #11, type: *simulator.WriteEvent, virtual time: 1.10, queue size: 1, memtable: 11.00 MB
+[DES] About to process event 12, queue size: 1
+[DES] Processed event #12, type: *simulator.WriteEvent, virtual time: 1.20, queue size: 1, memtable: 12.00 MB
+[DES] About to process event 13, queue size: 1
+[DES] Processed event #13, type: *simulator.WriteEvent, virtual time: 1.30, queue size: 1, memtable: 13.00 MB
+[DES] About to process event 14, queue size: 1
+[DES] Processed event #14, type: *simulator.WriteEvent, virtual time: 1.40, queue size: 1, memtable: 14.00 MB
+[DES] About to process event 15, queue size: 1
+[DES] Processed event #15, type: *simulator.WriteEvent, virtual time: 1.50, queue size: 1, memtable: 15.00 MB
+[DES] About to process event 16, queue size: 1
+[DES] Processed event #16, type: *simulator.WriteEvent, virtual time: 1.60, queue size: 1, memtable: 16.00 MB
+[DES] About to process event 17, queue size: 1
+[DES] Processed event #17, type: *simulator.WriteEvent, virtual time: 1.70, queue size: 1, memtable: 17.00 MB
+[DES] About to process event 18, queue size: 1
+[DES] Processed event #18, type: *simulator.WriteEvent, virtual time: 1.80, queue size: 1, memtable: 18.00 MB
+[DES] About to process event 19, queue size: 1
+[DES] Processed event #19, type: *simulator.WriteEvent, virtual time: 1.90, queue size: 1, memtable: 19.00 MB
+[DES] About to process event 20, queue size: 1
+[DES] Processed event #20, type: *simulator.WriteEvent, virtual time: 2.00, queue size: 1, memtable: 20.00 MB
+[DES] About to process event 21, queue size: 1
+[DES] Processed event #21, type: *simulator.WriteEvent, virtual time: 2.10, queue size: 1, memtable: 21.00 MB
+[DES] About to process event 22, queue size: 1
+[DES] Processed event #22, type: *simulator.WriteEvent, virtual time: 2.20, queue size: 1, memtable: 22.00 MB
+[DES] About to process event 23, queue size: 1
+[DES] Processed event #23, type: *simulator.WriteEvent, virtual time: 2.30, queue size: 1, memtable: 23.00 MB
+[DES] About to process event 24, queue size: 1
+[DES] Processed event #24, type: *simulator.WriteEvent, virtual time: 2.40, queue size: 1, memtable: 24.00 MB
+[DES] About to process event 25, queue size: 1
+[DES] Processed event #25, type: *simulator.WriteEvent, virtual time: 2.50, queue size: 1, memtable: 25.00 MB
+[DES] About to process event 26, queue size: 1
+[DES] Processed event #26, type: *simulator.WriteEvent, virtual time: 2.60, queue size: 1, memtable: 26.00 MB
+[DES] About to process event 27, queue size: 1
+[DES] Processed event #27, type: *simulator.WriteEvent, virtual time: 2.70, queue size: 1, memtable: 27.00 MB
+[DES] About to process event 28, queue size: 1
+[DES] Processed event #28, type: *simulator.WriteEvent, virtual time: 2.80, queue size: 1, memtable: 28.00 MB
+[DES] About to process event 29, queue size: 1
+[DES] Processed event #29, type: *simulator.WriteEvent, virtual time: 2.90, queue size: 1, memtable: 29.00 MB
+[DES] About to process event 30, queue size: 1
+[DES] Processed event #30, type: *simulator.WriteEvent, virtual time: 3.00, queue size: 1, memtable: 30.00 MB
+[DES] About to process event 31, queue size: 1
+[DES] Processed event #31, type: *simulator.WriteEvent, virtual time: 3.10, queue size: 1, memtable: 31.00 MB
+[DES] About to process event 32, queue size: 1
+[DES] Processed event #32, type: *simulator.WriteEvent, virtual time: 3.20, queue size: 1, memtable: 32.00 MB
+[DES] About to process event 33, queue size: 1
+[DES] Processed event #33, type: *simulator.WriteEvent, virtual time: 3.30, queue size: 1, memtable: 33.00 MB
+[DES] About to process event 34, queue size: 1
+[DES] Processed event #34, type: *simulator.WriteEvent, virtual time: 3.40, queue size: 1, memtable: 34.00 MB
+[DES] About to process event 35, queue size: 1
+[DES] Processed event #35, type: *simulator.WriteEvent, virtual time: 3.50, queue size: 1, memtable: 35.00 MB
+[DES] About to process event 36, queue size: 1
+[DES] Processed event #36, type: *simulator.WriteEvent, virtual time: 3.60, queue size: 1, memtable: 36.00 MB
+[DES] About to process event 37, queue size: 1
+[DES] Processed event #37, type: *simulator.WriteEvent, virtual time: 3.70, queue size: 1, memtable: 37.00 MB
+[DES] About to process event 38, queue size: 1
+[DES] Processed event #38, type: *simulator.WriteEvent, virtual time: 3.80, queue size: 1, memtable: 38.00 MB
+[DES] About to process event 39, queue size: 1
+[DES] Processed event #39, type: *simulator.WriteEvent, virtual time: 3.90, queue size: 1, memtable: 39.00 MB
+[DES] About to process event 40, queue size: 1
+[DES] Processed event #40, type: *simulator.WriteEvent, virtual time: 4.00, queue size: 1, memtable: 40.00 MB
+[DES] About to process event 41, queue size: 1
+[DES] Processed event #41, type: *simulator.WriteEvent, virtual time: 4.10, queue size: 1, memtable: 41.00 MB
+[DES] About to process event 42, queue size: 1
+[DES] Processed event #42, type: *simulator.WriteEvent, virtual time: 4.20, queue size: 1, memtable: 42.00 MB
+[DES] About to process event 43, queue size: 1
+[DES] Processed event #43, type: *simulator.WriteEvent, virtual time: 4.30, queue size: 1, memtable: 43.00 MB
+[DES] About to process event 44, queue size: 1
+[DES] Processed event #44, type: *simulator.WriteEvent, virtual time: 4.40, queue size: 1, memtable: 44.00 MB
+[DES] About to process event 45, queue size: 1
+[DES] Processed event #45, type: *simulator.WriteEvent, virtual time: 4.50, queue size: 1, memtable: 45.00 MB
+[DES] About to process event 46, queue size: 1
+[DES] Processed event #46, type: *simulator.WriteEvent, virtual time: 4.60, queue size: 1, memtable: 46.00 MB
+[DES] About to process event 47, queue size: 1
+[DES] Processed event #47, type: *simulator.WriteEvent, virtual time: 4.70, queue size: 1, memtable: 47.00 MB
+[DES] About to process event 48, queue size: 1
+[DES] Processed event #48, type: *simulator.WriteEvent, virtual time: 4.80, queue size: 1, memtable: 48.00 MB
+[DES] About to process event 49, queue size: 1
+[DES] Processed event #49, type: *simulator.WriteEvent, virtual time: 4.90, queue size: 1, memtable: 49.00 MB
+[DES] About to process event 50, queue size: 1
+[DES] Processed event #50, type: *simulator.WriteEvent, virtual time: 5.00, queue size: 1, memtable: 50.00 MB
+[DES] About to process event 51, queue size: 1
+[DES] Processed event #51, type: *simulator.WriteEvent, virtual time: 5.10, queue size: 1, memtable: 51.00 MB
+[DES] About to process event 52, queue size: 1
+[DES] Processed event #52, type: *simulator.WriteEvent, virtual time: 5.20, queue size: 1, memtable: 52.00 MB
+[DES] About to process event 53, queue size: 1
+[DES] Processed event #53, type: *simulator.WriteEvent, virtual time: 5.30, queue size: 1, memtable: 53.00 MB
+[DES] About to process event 54, queue size: 1
+[DES] Processed event #54, type: *simulator.WriteEvent, virtual time: 5.40, queue size: 1, memtable: 54.00 MB
+[DES] About to process event 55, queue size: 1
+[DES] Processed event #55, type: *simulator.WriteEvent, virtual time: 5.50, queue size: 1, memtable: 55.00 MB
+[DES] About to process event 56, queue size: 1
+[DES] Processed event #56, type: *simulator.WriteEvent, virtual time: 5.60, queue size: 1, memtable: 56.00 MB
+[DES] Processed event #57, type: *simulator.WriteEvent, virtual time: 5.70, queue size: 1, memtable: 57.00 MB
+[DES] Processed event #58, type: *simulator.WriteEvent, virtual time: 5.80, queue size: 1, memtable: 58.00 MB
+[DES] Processed event #59, type: *simulator.WriteEvent, virtual time: 5.90, queue size: 1, memtable: 59.00 MB
+[DES] Processed event #60, type: *simulator.WriteEvent, virtual time: 6.00, queue size: 1, memtable: 60.00 MB
+[UI] *** TICKER FIRED *** Tick #1
+2025/10/24 14:37:12 Client disconnected
+2025/10/24 14:37:12 Client connected
+2025/10/24 14:37:12 Client connected
+2025/10/24 14:37:12 Client disconnected
+2025/10/24 14:37:15 Client connected
+2025/10/24 16:01:29 Client disconnected
+2025/10/24 16:01:29 Client disconnected
+2025/10/24 16:01:29 Client connected
+2025/10/24 16:01:29 Client connected
+2025/10/24 16:01:29 Client disconnected
+2025/10/24 16:01:32 Client connected
+2025/10/24 17:12:09 Client disconnected
+2025/10/24 17:12:10 Client connected

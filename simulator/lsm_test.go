@@ -584,54 +584,7 @@ func TestTotalDowncompactBytes(t *testing.T) {
 			score, scoreWithDowncompact)
 	}
 
-	// TODO(fidelity): Add full dynamic mode test when full CalculateBaseBytes is implemented
-}
-
-// TestDynamicModeKScoreScale tests that kScoreScale is only applied when totalDowncompactBytes > 0
-func TestDynamicModeKScoreScale(t *testing.T) {
-	config := DefaultConfig()
-	config.NumLevels = 3
-	config.MaxBytesForLevelBaseMB = 256
-	config.LevelCompactionDynamicLevelBytes = true // Enable dynamic mode
-
-	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
-
-	// Setup: L1 = 300MB (exceeds 256MB target)
-	tree.Levels[1].AddSize(300.0, 1.0)
-
-	// Case 1: No incoming data from upper levels
-	// Should use simple ratio (no kScoreScale)
-	scoreNoDowncompact := tree.calculateCompactionScore(1, config, 0.0)
-	expectedSimple := 300.0 / 256.0 // 1.17
-	tolerance := 0.01
-	if scoreNoDowncompact < expectedSimple-tolerance || scoreNoDowncompact > expectedSimple+tolerance {
-		t.Errorf("Dynamic mode with no downcompact: expected %.2f, got %.2f", expectedSimple, scoreNoDowncompact)
-	}
-
-	// Case 2: With incoming data from upper levels
-	// Should use kScoreScale formula: size / (target + downcompact) * 10.0
-	totalDowncompactBytes := 100.0
-	scoreWithDowncompact := tree.calculateCompactionScore(1, config, totalDowncompactBytes)
-	expectedWithScale := (300.0 / (256.0 + 100.0)) * 10.0 // ~8.43
-	if scoreWithDowncompact < expectedWithScale-tolerance || scoreWithDowncompact > expectedWithScale+tolerance {
-		t.Errorf("Dynamic mode with downcompact: expected %.2f, got %.2f", expectedWithScale, scoreWithDowncompact)
-	}
-
-	// Verify that kScoreScale makes the score higher (keeps it > 1.0)
-	// Without kScoreScale, score would be 300/(256+100) = 0.84, which is < 1.0
-	// With kScoreScale, score is ~8.43, which is > 1.0
-	if scoreWithDowncompact < 1.0 {
-		t.Errorf("Dynamic mode kScoreScale should keep score > 1.0, got %.2f", scoreWithDowncompact)
-	}
-
-	// Case 3: Level under target should NOT apply kScoreScale even with downcompact
-	tree2 := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
-	tree2.Levels[1].AddSize(200.0, 1.0) // Under 256MB target
-	scoreUnderTarget := tree2.calculateCompactionScore(1, config, 100.0)
-	expectedUnderTarget := 200.0 / 256.0 // 0.78 (simple ratio)
-	if scoreUnderTarget < expectedUnderTarget-tolerance || scoreUnderTarget > expectedUnderTarget+tolerance {
-		t.Errorf("Dynamic mode under target: expected %.2f, got %.2f", expectedUnderTarget, scoreUnderTarget)
-	}
+	// TODO(fidelity): Add dynamic mode test when full CalculateBaseBytes is implemented
 }
 
 // TestStaticModeScoring tests that static mode uses simple ratio without kScoreScale

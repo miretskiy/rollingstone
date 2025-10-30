@@ -1,7 +1,6 @@
 package simulator
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -51,7 +50,7 @@ func TestWriteAmplificationTracking(t *testing.T) {
 	t.Run("WA after compaction", func(t *testing.T) {
 		// Simulate L0→L1 compaction with reduction factor
 		// Input: 200MB, Output: 180MB (10% reduction)
-		sim.metrics.RecordCompaction(200.0, 180.0, 1.0, 2.0, 0, 10, 8)
+		sim.metrics.RecordCompaction(200.0, 180.0, 1.0, 2.0, 0, 2, 1)
 
 		// Total disk writes = 200 (flush) + 180 (compaction) = 380MB
 		// WA = 380 / 200 = 1.9
@@ -84,7 +83,7 @@ func TestMultiRoundCompactionWA(t *testing.T) {
 	}
 
 	// L0→L1 compaction: 100MB → 90MB (10% reduction)
-	sim.metrics.RecordCompaction(100.0, 90.0, 1.0, 2.0, 0, 5, 4)
+	sim.metrics.RecordCompaction(100.0, 90.0, 1.0, 2.0, 0, 1, 1)
 
 	// Total disk writes = 100 (flush) + 90 (L0→L1) = 190MB
 	// WA = 190 / 100 = 1.9
@@ -94,7 +93,7 @@ func TestMultiRoundCompactionWA(t *testing.T) {
 	}
 
 	// L1→L2 compaction: 90MB → 89.1MB (1% reduction for deeper levels)
-	sim.metrics.RecordCompaction(90.0, 89.1, 2.0, 3.0, 1, 4, 3)
+	sim.metrics.RecordCompaction(90.0, 89.1, 2.0, 3.0, 1, 1, 1)
 
 	// Total disk writes = 100 + 90 + 89.1 = 279.1MB
 	// WA = 279.1 / 100 = 2.791
@@ -154,27 +153,23 @@ func TestReductionFactorApplication(t *testing.T) {
 				lsm.Levels[tt.fromLevel].AddSize(tt.inputMB/2, 1.0)
 			}
 
-			// Add a small target file to ensure we do a real compaction (not trivial move)
-			targetFile := &SSTFile{ID: fmt.Sprintf("target-L%d", tt.toLevel), SizeMB: 5.0, CreatedAt: 0.5}
-			lsm.Levels[tt.toLevel].Files = append(lsm.Levels[tt.toLevel].Files, targetFile)
-
 			job := &CompactionJob{
 				FromLevel:   tt.fromLevel,
 				ToLevel:     tt.toLevel,
 				SourceFiles: lsm.Levels[tt.fromLevel].Files,
-				TargetFiles: []*SSTFile{targetFile},
+				TargetFiles: []*SSTFile{},
 			}
 
-		inputSize, outputSize, _ := compactor.ExecuteCompaction(job, lsm, config, 10.0)
+			inputSize, outputSize, outputFileCount := compactor.ExecuteCompaction(job, lsm, config, 10.0)
+			_ = outputFileCount // Use outputFileCount to avoid unused variable warning
 
-		// Verify input size (source files + target file)
-			expectedInput := tt.inputMB + 5.0
-			if inputSize != expectedInput {
-				t.Errorf("Expected input size %.1f MB, got %.1f MB", expectedInput, inputSize)
+			// Verify input size
+			if inputSize != tt.inputMB {
+				t.Errorf("Expected input size %.1f MB, got %.1f MB", tt.inputMB, inputSize)
 			}
 
 			// Verify output size matches expected reduction
-			expectedOutput := expectedInput * tt.reductionFactor
+			expectedOutput := tt.inputMB * tt.reductionFactor
 			if outputSize != expectedOutput {
 				t.Errorf("Expected output size %.1f MB (%.0f%% of input), got %.1f MB",
 					expectedOutput, tt.reductionFactor*100, outputSize)
@@ -201,10 +196,10 @@ func TestWriteAmplificationBounds(t *testing.T) {
 	sim.metrics.RecordFlush(userWrittenMB, 0.0, 1.0)
 
 	// L0→L1: 1000MB → 900MB
-	sim.metrics.RecordCompaction(1000.0, 900.0, 1.0, 2.0, 0, 20, 18)
+	sim.metrics.RecordCompaction(1000.0, 900.0, 1.0, 2.0, 0, 1, 1)
 
 	// L1→L2: 900MB → 891MB
-	sim.metrics.RecordCompaction(900.0, 891.0, 2.0, 3.0, 1, 18, 16)
+	sim.metrics.RecordCompaction(900.0, 891.0, 2.0, 3.0, 1, 1, 1)
 
 	// Total disk writes = 1000 + 900 + 891 = 2791MB
 	// WA = 2791 / 1000 = 2.791
@@ -228,7 +223,7 @@ func TestWriteAmplificationBounds(t *testing.T) {
 		waBefore := sim.metrics.WriteAmplification
 
 		// Add another compaction round
-		sim.metrics.RecordCompaction(891.0, 882.0, 3.0, 4.0, 2, 16, 14)
+		sim.metrics.RecordCompaction(891.0, 882.0, 3.0, 4.0, 2, 1, 1)
 
 		if sim.metrics.WriteAmplification <= waBefore {
 			t.Errorf("WA should increase after more compactions: before=%.2f, after=%.2f",

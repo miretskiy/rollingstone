@@ -36,6 +36,7 @@ type ServerMessage struct {
 	Metrics *simulator.Metrics     `json:"metrics,omitempty"`
 	State   map[string]interface{} `json:"state,omitempty"`
 	Error   *string                `json:"error,omitempty"` // Validation or runtime errors
+	Log     *string                `json:"log,omitempty"`   // Event log message
 }
 
 // simState manages the simulation state and UI pacing
@@ -45,6 +46,7 @@ type simState struct {
 	paused  bool
 	mu      sync.Mutex
 	stopCh  chan struct{}
+	logCh   chan string // Buffered channel for log events
 }
 
 func newSimState(config simulator.SimConfig) (*simState, error) {
@@ -53,11 +55,25 @@ func newSimState(config simulator.SimConfig) (*simState, error) {
 		return nil, err
 	}
 
+	// Create log channel with reasonable buffer (don't block simulation)
+	logCh := make(chan string, 100)
+
+	// Set up log event callback
+	sim.LogEvent = func(msg string) {
+		select {
+		case logCh <- msg:
+			// Sent successfully
+		default:
+			// Buffer full, drop message (don't block simulation)
+		}
+	}
+
 	return &simState{
 		sim:     sim,
 		running: false,
 		paused:  false,
 		stopCh:  make(chan struct{}),
+		logCh:   logCh,
 	}, nil
 }
 
@@ -162,6 +178,66 @@ func (s *simState) resetAggregateStats() {
 // stop signals the UI loop to stop
 func (s *simState) stop() {
 	close(s.stopCh)
+}
+
+// logForwardLoop forwards log events from the simulator to the WebSocket
+// Batches log messages to reduce WebSocket overhead and UI lag
+// This runs in its own goroutine
+func logForwardLoop(conn *safeConn, state *simState) {
+	ticker := time.NewTicker(200 * time.Millisecond) // Batch every 200ms
+	defer ticker.Stop()
+
+	batch := make([]string, 0, 50) // Pre-allocate for typical batch size
+
+	for {
+		select {
+		case <-state.stopCh:
+			// Send any remaining logs before exiting
+			if len(batch) > 0 {
+				sendLogBatch(conn, batch)
+			}
+			return
+
+		case logMsg := <-state.logCh:
+			batch = append(batch, logMsg)
+			// If batch is getting large, send immediately to prevent memory buildup
+			if len(batch) >= 100 {
+				sendLogBatch(conn, batch)
+				batch = batch[:0] // Reset slice, keep capacity
+			}
+
+		case <-ticker.C:
+			// Periodically flush batch
+			if len(batch) > 0 {
+				sendLogBatch(conn, batch)
+				batch = batch[:0] // Reset slice, keep capacity
+			}
+		}
+	}
+}
+
+// sendLogBatch sends a batch of log messages as a single WebSocket message
+func sendLogBatch(conn *safeConn, batch []string) {
+	if len(batch) == 0 {
+		return
+	}
+
+	// Join logs with newlines for display
+	logText := ""
+	for i, msg := range batch {
+		if i > 0 {
+			logText += "\n"
+		}
+		logText += msg
+	}
+
+	msg := ServerMessage{
+		Type: "log",
+		Log:  &logText,
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		log.Printf("Error sending log batch: %v", err)
+	}
 }
 
 // uiUpdateLoop periodically calls Step() and sends updates to the client
@@ -280,6 +356,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Start UI update loop
 	go uiUpdateLoop(safeConn, state)
+
+	// Start log forwarding loop
+	go logForwardLoop(safeConn, state)
 
 	// Handle messages from client
 	for {

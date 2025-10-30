@@ -30,6 +30,11 @@ type Simulator struct {
 	activeCompactions      map[int]bool            // Track which levels are actively compacting
 	activeCompactionInfos  []*ActiveCompactionInfo // Detailed info about active compactions
 	pendingCompactions     map[int]*CompactionJob  // Jobs waiting to execute (keyed by fromLevel)
+	isWriteStalled         bool                    // Whether writes are currently stalled
+	stallStartTime         float64                 // When the current stall started (0 if not stalled)
+
+	// Event logging callback (optional, for UI/debugging)
+	LogEvent func(msg string)
 }
 
 // NewSimulator creates a new simulator
@@ -53,6 +58,8 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		activeCompactions:      make(map[int]bool),
 		activeCompactionInfos:  make([]*ActiveCompactionInfo, 0),
 		pendingCompactions:     make(map[int]*CompactionJob),
+		isWriteStalled:         false,
+		stallStartTime:         0,
 	}
 
 	// Note: Simulator starts in "dormant" state with no events scheduled
@@ -115,7 +122,10 @@ func (s *Simulator) Step() {
 		// Update metrics with current state
 		// Total memtables = 1 active + immutable ones waiting to flush
 		numMemtables := 1 + s.numImmutableMemtables
-		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps)
+		// Count stalled writes (WriteEvents in queue that are rescheduled due to stall)
+		stalledCount := s.countStalledWrites()
+		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps,
+			s.isWriteStalled, stalledCount)
 	}
 
 	// Log queue size periodically (every 100 seconds of virtual time)
@@ -137,6 +147,8 @@ func (s *Simulator) Reset() {
 	s.activeCompactions = make(map[int]bool)
 	s.activeCompactionInfos = make([]*ActiveCompactionInfo, 0)
 	s.pendingCompactions = make(map[int]*CompactionJob)
+	s.isWriteStalled = false
+	s.stallStartTime = 0
 
 	// Pre-populate LSM with initial data if configured
 	if s.config.InitialLSMSizeMB > 0 {
@@ -359,9 +371,27 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 	// Write stall check - matches RocksDB's max_write_buffer_number limit
 	if s.numImmutableMemtables >= s.config.MaxWriteBufferNumber {
 		// Write stall! Reschedule this write for 1ms later (matches RocksDB's check interval)
+		// Only log on state transition (entering stall) to avoid log spam
+		if !s.isWriteStalled {
+			s.isWriteStalled = true
+			s.stallStartTime = s.virtualTime
+			s.logEvent("[t=%.1fs] WRITE STALL: %d immutable memtables (max=%d), writes delayed",
+				s.virtualTime, s.numImmutableMemtables, s.config.MaxWriteBufferNumber)
+		}
 		stallTime := s.virtualTime + 0.001 // 1ms = 0.001 seconds
 		s.queue.Push(NewWriteEvent(stallTime, event.SizeMB()))
 		return
+	}
+
+	// Stall cleared - log if we were previously stalled
+	if s.isWriteStalled {
+		s.isWriteStalled = false
+		duration := s.virtualTime - s.stallStartTime
+		// Accumulate stall duration in metrics
+		s.metrics.StallDurationSeconds += duration
+		s.logEvent("[t=%.1fs] WRITE STALL CLEARED: %d immutable memtables (max=%d), writes resuming (stall duration: %.3fs)",
+			s.virtualTime, s.numImmutableMemtables, s.config.MaxWriteBufferNumber, duration)
+		s.stallStartTime = 0
 	}
 
 	// Add write to memtable
@@ -868,6 +898,23 @@ func (s *Simulator) scheduleNextCompactionCheck(currentTime float64) {
 	s.queue.Push(NewCompactionCheckEvent(nextCheckTime))
 }
 
+// countStalledWrites estimates the number of stalled write events in the queue
+func (s *Simulator) countStalledWrites() int {
+	if !s.isWriteStalled {
+		return 0
+	}
+	// Count WriteEvents in queue that are scheduled after current time
+	// (these are stalled writes waiting to be retried)
+	// We need to peek at the queue without modifying it
+	// Since we can't iterate safely, we'll estimate based on queue size
+	// A more accurate count would require queue inspection, but for metrics
+	// this approximation is sufficient
+	queueSize := s.queue.Len()
+	// Rough estimate: if we're stalled, some portion of queue is stalled writes
+	// In practice, during a stall, most writes are WriteEvents waiting to retry
+	return queueSize
+}
+
 // ActiveCompactions returns a list of levels currently being compacted
 func (s *Simulator) ActiveCompactions() []int {
 	active := make([]int, 0, len(s.activeCompactions))
@@ -875,6 +922,15 @@ func (s *Simulator) ActiveCompactions() []int {
 		active = append(active, level)
 	}
 	return active
+}
+
+// logEvent sends a log message to both stdout and the UI (if callback is set)
+func (s *Simulator) logEvent(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Println(msg)
+	if s.LogEvent != nil {
+		s.LogEvent(msg)
+	}
 }
 
 // Helper functions

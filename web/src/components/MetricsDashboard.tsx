@@ -17,12 +17,12 @@ export function MetricsDashboard() {
     };
 
     // Count total active compactions across all levels
-    const activeCompactionCount = currentState?.activeCompactionInfos?.length ?? 0;
+    const activeCompactionCount = currentState?.activeCompactions?.length ?? 0;
 
     return (
         <div className="space-y-6">
             {/* Key Metrics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                 {/* Active Compactions */}
                 <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-2">
@@ -36,6 +36,48 @@ export function MetricsDashboard() {
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
                         {activeCompactionCount > 0 ? `${config.maxBackgroundJobs} max parallel` : 'Idle'}
+                    </div>
+                </div>
+
+                {/* Write Stall Status */}
+                <div className={`bg-dark-card border ${currentMetrics?.isStalled ? 'border-red-500' : 'border-dark-border'} rounded-lg p-4 shadow-lg`}>
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <Activity className={`w-4 h-4 ${currentMetrics?.isStalled ? 'text-red-400 animate-pulse' : 'text-green-400'}`} />
+                            <span className="text-sm text-gray-400">Write Stall Status</span>
+                        </div>
+                    </div>
+                    <div className={`text-3xl font-bold ${currentMetrics?.isStalled ? 'text-red-400' : 'text-green-400'}`}>
+                        {currentMetrics?.isStalled ? 'STALLED' : 'NORMAL'}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1 space-y-1">
+                        {currentMetrics?.isStalled ? (
+                            <div className="text-red-400 font-medium">
+                                {currentMetrics.stalledWriteCount || 0} writes queued
+                                {config && (
+                                    <span className="text-gray-400 ml-1">
+                                        ({formatBytes((currentMetrics.stalledWriteCount || 0) * config.memtableFlushSizeMB)})
+                                    </span>
+                                )}
+                            </div>
+                        ) : (
+                            <div>Writes flowing normally</div>
+                        )}
+                        {/* Always show cumulative metrics if they exist */}
+                        {(currentMetrics?.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0) ||
+                            (currentMetrics?.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0) ? (
+                            <div className="mt-1 space-y-0.5 text-gray-400 border-t border-dark-border pt-1">
+                                {currentMetrics.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0 && config && (
+                                    <div>
+                                        Peak: {currentMetrics.maxStalledWriteCount} writes
+                                        ({formatBytes(currentMetrics.maxStalledWriteCount * config.memtableFlushSizeMB)})
+                                    </div>
+                                )}
+                                {currentMetrics.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0 && (
+                                    <div>Total stalled: {formatTime(currentMetrics.stallDurationSeconds)}</div>
+                                )}
+                            </div>
+                        ) : null}
                     </div>
                 </div>
 
@@ -99,7 +141,16 @@ export function MetricsDashboard() {
                         {currentState ? formatTime(currentState.virtualTime) : '--'}
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                        {currentState && `${currentState.memtableCurrentSizeMB.toFixed(1)} MB in memtable`}
+                        {currentState && (
+                            <>
+                                <div>{currentState.memtableCurrentSizeMB.toFixed(1)} MB in memtable</div>
+                                {currentMetrics?.isStalled && (
+                                    <div className="text-red-400 mt-1">
+                                        {currentState.numImmutableMemtables || 0}/{config.maxWriteBufferNumber} immutable
+                                    </div>
+                                )}
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
@@ -267,76 +318,6 @@ export function MetricsDashboard() {
                                 isAnimationActive={false}
                                 name="Write Latency"
                             />
-                            <Line
-                                type="monotone"
-                                dataKey="readLatencyMs"
-                                stroke="#60a5fa"
-                                strokeWidth={2}
-                                dot={false}
-                                isAnimationActive={false}
-                                name="Read Latency"
-                            />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-
-                Write Throughput Chart
-                <div className="bg-dark-card border border-dark-border rounded-lg p-6 shadow-lg">
-                    <h3 className="text-lg font-semibold mb-4">Write Throughput (MB/s)</h3>
-                    <ResponsiveContainer width="100%" height={300}>
-                        <LineChart data={throughputData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3e" />
-                            <XAxis
-                                dataKey="timestamp"
-                                stroke="#666"
-                                tickFormatter={(t) => formatTime(t)}
-                            />
-                            <YAxis stroke="#666" label={{ value: 'MB/s', angle: -90, position: 'insideLeft' }} />
-                            <Tooltip
-                                contentStyle={{
-                                    backgroundColor: '#1a1a2e',
-                                    border: '1px solid #2a2a3e',
-                                    borderRadius: '8px'
-                                }}
-                                labelFormatter={(t) => `Time: ${formatTime(t as number)}`}
-                            />
-                            <Legend />
-                            <Line
-                                type="monotone"
-                                dataKey="flushThroughputMBps"
-                                stroke="#10b981"
-                                strokeWidth={2}
-                                dot={false}
-                                isAnimationActive={false}
-                                name="Flush (L0)"
-                            />
-                            Render per-level compaction lines based on configured levels
-                            {config && (() => {
-                                const levelColors = ['#f59e0b', '#ef4444', '#ec4899', '#a855f7', '#6366f1', '#3b82f6', '#06b6d4'];
-                                // Generate lines for L0→L1, L1→L2, ..., L(n-2)→L(n-1)
-                                return Array.from({ length: config.numLevels - 1 }, (_, idx) => (
-                                    <Line
-                                        key={`level${idx}`}
-                                        type="monotone"
-                                        dataKey={`level${idx}ThroughputMBps`}
-                                        stroke={levelColors[idx % levelColors.length]}
-                                        strokeWidth={2}
-                                        dot={false}
-                                        isAnimationActive={false}
-                                        name={`L${idx}→L${idx + 1}`}
-                                    />
-                                ));
-                            })()}
-                            <Line
-                                type="monotone"
-                                dataKey="totalWriteThroughputMBps"
-                                stroke="#ffffff"
-                                strokeWidth={3}
-                                dot={false}
-                                isAnimationActive={false}
-                                name="Total"
-                                strokeDasharray="5 5"
-                            />
                         </LineChart>
                     </ResponsiveContainer>
                 </div>
@@ -344,4 +325,3 @@ export function MetricsDashboard() {
         </div>
     );
 }
-

@@ -83,10 +83,12 @@ export function ConfigInput({
                     }
                 }}
                 onFocus={(e) => {
+                    console.log(`[${field}] FOCUS`);
                     e.target.select();
                     setIsFocused(true);
                 }}
                 onBlur={() => {
+                    console.log(`[${field}] BLUR`);
                     setIsFocused(false);
                     applyValue();
                 }}

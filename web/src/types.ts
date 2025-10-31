@@ -19,6 +19,7 @@ export interface SimulationConfig {
     initialLSMSizeMB: number;
     simulationSpeedMultiplier: number;
     randomSeed: number;
+    maxStalledWriteMemoryMB?: number;
 }
 
 export interface CompactionStats {
@@ -42,6 +43,8 @@ export interface SimulationMetrics {
     compactionThroughputMBps: number;
     totalWriteThroughputMBps: number;
     perLevelThroughputMBps: Record<number, number>;
+    maxSustainableWriteRateMBps?: number; // Maximum sustainable write rate (conservative estimate)
+    minSustainableWriteRateMBps?: number; // Minimum sustainable write rate (worst-case estimate)
     compactionsSinceUpdate?: Record<number, CompactionStats>; // Per-level aggregate compaction activity
     inProgressCount?: number;
     inProgressDetails?: Array<{
@@ -54,6 +57,7 @@ export interface SimulationMetrics {
     maxStalledWriteCount?: number;
     stallDurationSeconds?: number;
     isStalled?: boolean;
+    isOOMKilled?: boolean;
 }
 
 export interface SSTFile {

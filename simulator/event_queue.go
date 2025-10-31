@@ -53,6 +53,31 @@ func (eq *EventQueue) Clear() {
 	heap.Init(&eq.events)
 }
 
+// CountWriteEvents counts the number of WriteEvents in the queue
+func (eq *EventQueue) CountWriteEvents() int {
+	count := 0
+	for _, event := range eq.events {
+		if event.Type() == EventTypeWrite {
+			count++
+		}
+	}
+	return count
+}
+
+// FindNextFlushEvent finds the earliest FlushEvent in the queue
+// Returns nil if no flush event is found
+func (eq *EventQueue) FindNextFlushEvent() *FlushEvent {
+	var earliestFlush *FlushEvent
+	for _, event := range eq.events {
+		if flushEvent, ok := event.(*FlushEvent); ok {
+			if earliestFlush == nil || flushEvent.Timestamp() < earliestFlush.Timestamp() {
+				earliestFlush = flushEvent
+			}
+		}
+	}
+	return earliestFlush
+}
+
 // eventHeap implements heap.Interface for Event
 type eventHeap []Event
 

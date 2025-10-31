@@ -7,8 +7,8 @@ import (
 // TestWriteAmplificationTracking tests that write amplification is correctly calculated
 // across flushes and compactions
 //
-// RocksDB calculates WA as: (bytes written to disk) / (bytes written by user)
-// This should match our simulation's calculation in metrics.go
+// RocksDB calculates WA as: (bytes written to disk) / (bytes written by flushes)
+// This matches our simulation's calculation in metrics.go (RocksDB-style flush-centric WA)
 func TestWriteAmplificationTracking(t *testing.T) {
 	config := SimConfig{
 		WriteRateMBps:                    10.0,
@@ -50,10 +50,10 @@ func TestWriteAmplificationTracking(t *testing.T) {
 	t.Run("WA after compaction", func(t *testing.T) {
 		// Simulate L0→L1 compaction with reduction factor
 		// Input: 200MB, Output: 180MB (10% reduction)
-		sim.metrics.RecordCompaction(200.0, 180.0, 1.0, 2.0, 0, 2, 1)
+		sim.metrics.RecordCompaction(200.0, 180.0, 1.0, 2.0, 0, 2, 1, false)
 
 		// Total disk writes = 200 (flush) + 180 (compaction) = 380MB
-		// WA = 380 / 200 = 1.9
+		// WA = 380 / 200 = 1.9 (RocksDB-style: flush-based denominator)
 		expectedWA := 380.0 / 200.0
 		if sim.metrics.WriteAmplification != expectedWA {
 			t.Errorf("After compaction: expected WA=%.2f, got %.2f", expectedWA, sim.metrics.WriteAmplification)
@@ -83,20 +83,20 @@ func TestMultiRoundCompactionWA(t *testing.T) {
 	}
 
 	// L0→L1 compaction: 100MB → 90MB (10% reduction)
-	sim.metrics.RecordCompaction(100.0, 90.0, 1.0, 2.0, 0, 1, 1)
+	sim.metrics.RecordCompaction(100.0, 90.0, 1.0, 2.0, 0, 1, 1, false)
 
 	// Total disk writes = 100 (flush) + 90 (L0→L1) = 190MB
-	// WA = 190 / 100 = 1.9
+	// WA = 190 / 100 = 1.9 (RocksDB-style: flush-based denominator)
 	expectedWA1 := 190.0 / 100.0
 	if sim.metrics.WriteAmplification != expectedWA1 {
 		t.Errorf("After L0→L1: expected WA=%.2f, got %.2f", expectedWA1, sim.metrics.WriteAmplification)
 	}
 
 	// L1→L2 compaction: 90MB → 89.1MB (1% reduction for deeper levels)
-	sim.metrics.RecordCompaction(90.0, 89.1, 2.0, 3.0, 1, 1, 1)
+	sim.metrics.RecordCompaction(90.0, 89.1, 2.0, 3.0, 1, 1, 1, false)
 
 	// Total disk writes = 100 + 90 + 89.1 = 279.1MB
-	// WA = 279.1 / 100 = 2.791
+	// WA = 279.1 / 100 = 2.791 (RocksDB-style: flush-based denominator)
 	expectedWA2 := 279.1 / 100.0
 	tolerance := 0.01
 	if sim.metrics.WriteAmplification < expectedWA2-tolerance || sim.metrics.WriteAmplification > expectedWA2+tolerance {
@@ -153,23 +153,29 @@ func TestReductionFactorApplication(t *testing.T) {
 				lsm.Levels[tt.fromLevel].AddSize(tt.inputMB/2, 1.0)
 			}
 
+			// Add a small file to target level to prevent trivial move
+			// Trivial moves skip reduction factor, so we need actual compaction
+			lsm.Levels[tt.toLevel].AddSize(1.0, 1.0)
+
 			job := &CompactionJob{
 				FromLevel:   tt.fromLevel,
 				ToLevel:     tt.toLevel,
 				SourceFiles: lsm.Levels[tt.fromLevel].Files,
-				TargetFiles: []*SSTFile{},
+				TargetFiles: lsm.Levels[tt.toLevel].Files, // Include target files to force actual compaction
 			}
 
 			inputSize, outputSize, outputFileCount := compactor.ExecuteCompaction(job, lsm, config, 10.0)
 			_ = outputFileCount // Use outputFileCount to avoid unused variable warning
 
-			// Verify input size
-			if inputSize != tt.inputMB {
-				t.Errorf("Expected input size %.1f MB, got %.1f MB", tt.inputMB, inputSize)
+			// Verify input size (includes both source and target files)
+			expectedInput := tt.inputMB + 1.0 // Source + target file
+			if inputSize != expectedInput {
+				t.Errorf("Expected input size %.1f MB, got %.1f MB", expectedInput, inputSize)
 			}
 
 			// Verify output size matches expected reduction
-			expectedOutput := tt.inputMB * tt.reductionFactor
+			// Output should be: (inputMB + 1.0) * reductionFactor
+			expectedOutput := expectedInput * tt.reductionFactor
 			if outputSize != expectedOutput {
 				t.Errorf("Expected output size %.1f MB (%.0f%% of input), got %.1f MB",
 					expectedOutput, tt.reductionFactor*100, outputSize)
@@ -196,13 +202,13 @@ func TestWriteAmplificationBounds(t *testing.T) {
 	sim.metrics.RecordFlush(userWrittenMB, 0.0, 1.0)
 
 	// L0→L1: 1000MB → 900MB
-	sim.metrics.RecordCompaction(1000.0, 900.0, 1.0, 2.0, 0, 1, 1)
+	sim.metrics.RecordCompaction(1000.0, 900.0, 1.0, 2.0, 0, 1, 1, false)
 
 	// L1→L2: 900MB → 891MB
-	sim.metrics.RecordCompaction(900.0, 891.0, 2.0, 3.0, 1, 1, 1)
+	sim.metrics.RecordCompaction(900.0, 891.0, 2.0, 3.0, 1, 1, 1, false)
 
 	// Total disk writes = 1000 + 900 + 891 = 2791MB
-	// WA = 2791 / 1000 = 2.791
+	// WA = 2791 / 1000 = 2.791 (RocksDB-style: flush-based denominator)
 
 	t.Run("WA should be >= 1.0", func(t *testing.T) {
 		if sim.metrics.WriteAmplification < 1.0 {
@@ -223,11 +229,51 @@ func TestWriteAmplificationBounds(t *testing.T) {
 		waBefore := sim.metrics.WriteAmplification
 
 		// Add another compaction round
-		sim.metrics.RecordCompaction(891.0, 882.0, 3.0, 4.0, 2, 1, 1)
+		sim.metrics.RecordCompaction(891.0, 882.0, 3.0, 4.0, 2, 1, 1, false)
 
 		if sim.metrics.WriteAmplification <= waBefore {
 			t.Errorf("WA should increase after more compactions: before=%.2f, after=%.2f",
 				waBefore, sim.metrics.WriteAmplification)
 		}
 	})
+}
+
+// TestTrivialMoveNoWriteAmplification verifies that trivial moves don't contribute to write amplification
+// RocksDB optimization: trivial moves are metadata-only operations (no disk writes)
+func TestTrivialMoveNoWriteAmplification(t *testing.T) {
+	sim, err := NewSimulator(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Failed to create simulator: %v", err)
+	}
+
+	// User writes 100MB
+	sim.metrics.RecordUserWrite(100.0)
+
+	// Flush to L0: 100MB
+	sim.metrics.RecordFlush(100.0, 0.0, 1.0)
+
+	// WA should be 1.0 after flush only
+	if sim.metrics.WriteAmplification != 1.0 {
+		t.Errorf("After flush: expected WA=1.0, got %.2f", sim.metrics.WriteAmplification)
+	}
+
+	// Trivial move: L1→L2 with no overlapping files (metadata-only, no disk writes)
+	// Input: 100MB, Output: 100MB (no reduction, just file pointer update)
+	sim.metrics.RecordCompaction(100.0, 100.0, 1.0, 2.0, 1, 1, 1, true)
+
+	// WA should still be 1.0 (trivial move doesn't contribute to disk writes)
+	if sim.metrics.WriteAmplification != 1.0 {
+		t.Errorf("After trivial move: expected WA=1.0 (no disk writes), got %.2f", sim.metrics.WriteAmplification)
+	}
+
+	// Now do a real compaction: L2→L3 with overlapping files
+	sim.metrics.RecordCompaction(100.0, 99.0, 2.0, 3.0, 2, 1, 1, false)
+
+	// Total disk writes = 100 (flush) + 99 (compaction) = 199MB
+	// WA = 199 / 100 = 1.99 (trivial move not counted)
+	expectedWA := 199.0 / 100.0
+	tolerance := 0.01
+	if sim.metrics.WriteAmplification < expectedWA-tolerance || sim.metrics.WriteAmplification > expectedWA+tolerance {
+		t.Errorf("After real compaction: expected WA≈%.2f, got %.2f", expectedWA, sim.metrics.WriteAmplification)
+	}
 }

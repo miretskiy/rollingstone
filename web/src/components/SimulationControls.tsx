@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight } from 'lucide-react';
+import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { useStore } from '../store';
 import type { SimulationConfig } from '../types';
 import { ConfigInput } from './ConfigInput';
@@ -9,6 +9,47 @@ export function SimulationControls() {
   // Read current I/O config for preset selection
   const ioLatency = useStore(state => state.config.ioLatencyMs);
   const ioThroughput = useStore(state => state.config.ioThroughputMBps);
+  const writeRate = useStore(state => state.config.writeRateMBps);
+  const currentMetrics = useStore(state => state.currentMetrics);
+  const maxBackgroundJobs = useStore(state => state.config.maxBackgroundJobs);
+  const bufferCapacityMB = useStore(state => state.config.maxStalledWriteMemoryMB) || 4096;
+  
+  // Calculate max sustainable rate from config OR from actual metrics if available
+  // Use actual metrics if simulation is running and has data, otherwise use theoretical estimate
+  let maxSustainableRate: number | undefined;
+  let minSustainableRate: number | undefined;
+  
+  if (currentMetrics?.maxSustainableWriteRateMBps && currentMetrics.maxSustainableWriteRateMBps > 0) {
+    // Use actual calculated values from simulation
+    maxSustainableRate = currentMetrics.maxSustainableWriteRateMBps;
+    minSustainableRate = currentMetrics.minSustainableWriteRateMBps;
+  } else {
+    // Calculate theoretical estimate from config
+    // Conservative multiplier: 3.0x on base 2.5x overhead = 7.5x total overhead
+    const conservativeOverhead = 2.5 * 3.0;
+    maxSustainableRate = ioThroughput / (1.0 + conservativeOverhead);
+    
+    // For worst-case estimate, need to know deepest level and file sizes
+    // Use a conservative worst-case estimate (L5→L6 with maxBackgroundJobs compactions)
+    const worstCaseFileSizeMB = 1600; // 1.6GB max file size
+    const worstCasePerCompactionIO = 4 * worstCaseFileSizeMB; // 4 files per compaction
+    const totalWorstCaseIO = worstCasePerCompactionIO * maxBackgroundJobs;
+    const worstCaseDuration = totalWorstCaseIO / ioThroughput;
+    minSustainableRate = bufferCapacityMB / worstCaseDuration;
+  }
+  
+  // Format range for display (ensure min < max)
+  let sustainableRangeStr: string | undefined;
+  if (minSustainableRate && maxSustainableRate && minSustainableRate > 0 && maxSustainableRate > 0) {
+    // Ensure correct order: min should be lower bound, max should be upper bound
+    const min = Math.min(minSustainableRate, maxSustainableRate);
+    const max = Math.max(minSustainableRate, maxSustainableRate);
+    sustainableRangeStr = `${min.toFixed(0)}-${max.toFixed(0)}`;
+  } else if (maxSustainableRate && maxSustainableRate > 0) {
+    sustainableRangeStr = maxSustainableRate.toFixed(1);
+  }
+  
+  const isExceedingSustainable = maxSustainableRate !== undefined && maxSustainableRate > 0 && writeRate > maxSustainableRate;
   const [expandedSections, setExpandedSections] = useState({
     lsm: true,
     lsmAdvanced: false,
@@ -152,11 +193,72 @@ export function SimulationControls() {
           {expandedSections.workload && (
             <div className="p-3 bg-dark-card">
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <ConfigInput label="Write Rate" field="writeRateMBps" min={0} max={1000} unit="MB/s"
-                  tooltip="Incoming write throughput (0 = no writes)" />
+                <ConfigInput 
+                  label="Write Rate" 
+                  field="writeRateMBps" 
+                  min={0} 
+                  max={1000} 
+                  unit={sustainableRangeStr ? `MB/s; max ${sustainableRangeStr}` : "MB/s"}
+                  tooltip={`Incoming write throughput (0 = no writes)${sustainableRangeStr ? `\n\nSustainable rate range: ${sustainableRangeStr} MB/s\n\nThis range accounts for:\n• Conservative estimate (upper bound): Average compaction overhead\n• Worst-case estimate (lower bound): Buffer capacity during worst-case compaction bursts\n\nSee detailed explanation below for worst-case scenarios.` : ''}`} />
                 <ConfigInput label="Deduplication Factor" field="compactionReductionFactor" min={0.1} max={1.0}
                   tooltip="Data reduction during compaction (0.9 = 10% reduction)" />
               </div>
+              {sustainableRangeStr && (
+                <details className="mt-2 text-xs text-gray-400">
+                  <summary className="cursor-pointer hover:text-gray-300 font-medium">Worst-case scenario explanation</summary>
+                  <div className="mt-2 p-3 bg-gray-900 rounded border border-gray-700 space-y-2 font-mono text-xs max-h-96 overflow-y-auto">
+                    <div className="font-semibold text-yellow-400 mb-2">How Bad Can Leveled Compaction Get?</div>
+                    <div>
+                      <div className="text-yellow-300 mb-1">Worst-Case Scenario:</div>
+                      <div className="pl-2 space-y-1 text-gray-300">
+                        <div>• {maxBackgroundJobs} parallel compactions scheduled between deepest levels</div>
+                        <div>• Each compaction pattern: Read 2 source files + 1 target file (overlap) + Write 1 output file</div>
+                        <div>• File sizes scale exponentially with level depth (up to 1.6GB-2GB per file)</div>
+                        <div>• With serialized execution (diskBusyUntil), compactions run sequentially</div>
+                        <div>• During compaction burst, flushes are blocked (disk fully consumed)</div>
+                        <div>• Writes continue arriving and accumulate in memtable buffer</div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-yellow-300 mb-1">Example Calculation (L5→L6, {maxBackgroundJobs} compactions):</div>
+                      <div className="pl-2 space-y-1 text-gray-300">
+                        <div>• Per compaction I/O: 4 files × 1600 MB = 6400 MB</div>
+                        <div>• Total queued I/O: {maxBackgroundJobs} × 6400 MB = {(maxBackgroundJobs * 6400 / 1024).toFixed(1)} GB</div>
+                        <div>• Duration: {(maxBackgroundJobs * 6400 / ioThroughput).toFixed(0)}s at {ioThroughput} MB/s disk</div>
+                        <div>• Buffer capacity: {bufferCapacityMB} MB ({bufferCapacityMB / 1024} GB)</div>
+                        <div>• Minimum sustainable: {bufferCapacityMB} MB ÷ {(maxBackgroundJobs * 6400 / ioThroughput).toFixed(0)}s = {minSustainableRate?.toFixed(1)} MB/s</div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-yellow-300 mb-1">Why maxBackgroundJobs Matters:</div>
+                      <div className="pl-2 space-y-1 text-gray-300">
+                        <div>• maxBackgroundJobs determines how many compactions can queue up</div>
+                        <div>• More parallel compactions = longer total duration = more writes accumulate</div>
+                        <div>• Sustainable rate scales inversely with maxBackgroundJobs</div>
+                        <div>• Example: {maxBackgroundJobs} jobs → {minSustainableRate?.toFixed(1)} MB/s, 1 job → {(bufferCapacityMB / (6400 / ioThroughput)).toFixed(1)} MB/s</div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-yellow-300 mb-1">Real-World Implications:</div>
+                      <div className="pl-2 space-y-1 text-gray-300">
+                        <div>• If LSM gets into bad shape, only way to fix is often to stop writes</div>
+                        <div>• RocksDB doesn't prevent worst-case scheduling - it relies on write throttling</div>
+                        <div>• This simulation shows what CAN happen, not what SHOULD happen</div>
+                        <div>• Monitoring and proactive tuning are essential for production systems</div>
+                      </div>
+                    </div>
+                    <div className="text-gray-500 italic mt-2 pt-2 border-t border-gray-700">
+                      Note: This is a simplified worst-case estimate. Actual LSM behavior depends on many factors including compaction patterns, file sizes, workload characteristics, and RocksDB's compaction scheduling heuristics.
+                    </div>
+                  </div>
+                </details>
+              )}
+              {isExceedingSustainable && (
+                <div className="mt-2 text-xs text-red-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  <span>Write rate exceeds sustainable limit ({sustainableRangeStr || maxSustainableRate?.toFixed(1)} MB/s)</span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -228,6 +330,8 @@ export function SimulationControls() {
                   tooltip="⚠️ Pre-populate LSM tree (requires reset)" />
                 <ConfigInput label="Random Seed" field="randomSeed" min={0} max={999999}
                   tooltip="Random seed for reproducibility (0 = random)" />
+                <ConfigInput label="Max Stalled Write Memory" field="maxStalledWriteMemoryMB" min={0} max={100000} unit="MB"
+                  tooltip="OOM threshold: stop simulation if stalled write backlog exceeds this (0 = unlimited, default: 4096 MB)" />
               </div>
             </div>
           )}

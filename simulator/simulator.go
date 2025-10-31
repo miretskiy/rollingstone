@@ -18,20 +18,21 @@ type ActiveCompactionInfo struct {
 // All state is accessed single-threaded via the Step() method.
 // The caller (cmd/server) manages pacing, pause/resume, and threading.
 type Simulator struct {
-	config                 SimConfig
-	lsm                    *LSMTree
-	metrics                *Metrics
-	queue                  *EventQueue
-	virtualTime            float64
-	diskBusyUntil          float64                 // Virtual time when disk I/O will be free
-	numImmutableMemtables  int                     // Memtables waiting to flush (in addition to active)
-	immutableMemtableSizes []float64               // Sizes (MB) of immutable memtables waiting to flush
-	compactor              Compactor               // Compaction strategy
-	activeCompactions      map[int]bool            // Track which levels are actively compacting
-	activeCompactionInfos  []*ActiveCompactionInfo // Detailed info about active compactions
-	pendingCompactions     map[int]*CompactionJob  // Jobs waiting to execute (keyed by fromLevel)
-	isWriteStalled         bool                    // Whether writes are currently stalled
-	stallStartTime         float64                 // When the current stall started (0 if not stalled)
+	config                  SimConfig
+	lsm                     *LSMTree
+	metrics                 *Metrics
+	queue                   *EventQueue
+	virtualTime             float64
+	diskBusyUntil           float64                 // Virtual time when disk I/O will be free
+	numImmutableMemtables   int                     // Memtables waiting to flush (in addition to active)
+	immutableMemtableSizes  []float64               // Sizes (MB) of immutable memtables waiting to flush
+	compactor               Compactor               // Compaction strategy
+	activeCompactions       map[int]bool            // Track which levels are actively compacting
+	activeCompactionInfos   []*ActiveCompactionInfo // Detailed info about active compactions
+	pendingCompactions      map[int]*CompactionJob  // Jobs waiting to execute (keyed by fromLevel)
+	stallStartTime          float64                 // When the current stall started (0 if not stalled)
+	stalledWriteBacklog     int                     // Number of writes waiting during stall (for OOM detection)
+	nextFlushCompletionTime float64                 // When the next flush that will clear the stall completes (0 if none scheduled)
 
 	// Event logging callback (optional, for UI/debugging)
 	LogEvent func(msg string)
@@ -46,20 +47,21 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 	lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 
 	sim := &Simulator{
-		config:                 config,
-		lsm:                    lsm,
-		metrics:                NewMetrics(),
-		queue:                  NewEventQueue(),
-		virtualTime:            0,
-		diskBusyUntil:          0,
-		numImmutableMemtables:  0,
-		immutableMemtableSizes: make([]float64, 0),
-		compactor:              NewLeveledCompactor(config.RandomSeed),
-		activeCompactions:      make(map[int]bool),
-		activeCompactionInfos:  make([]*ActiveCompactionInfo, 0),
-		pendingCompactions:     make(map[int]*CompactionJob),
-		isWriteStalled:         false,
-		stallStartTime:         0,
+		config:                  config,
+		lsm:                     lsm,
+		metrics:                 NewMetrics(),
+		queue:                   NewEventQueue(),
+		virtualTime:             0,
+		diskBusyUntil:           0,
+		numImmutableMemtables:   0,
+		immutableMemtableSizes:  make([]float64, 0),
+		compactor:               NewLeveledCompactor(config.RandomSeed),
+		activeCompactions:       make(map[int]bool),
+		activeCompactionInfos:   make([]*ActiveCompactionInfo, 0),
+		pendingCompactions:      make(map[int]*CompactionJob),
+		stallStartTime:          0,
+		stalledWriteBacklog:     0,
+		nextFlushCompletionTime: 0,
 	}
 
 	// Note: Simulator starts in "dormant" state with no events scheduled
@@ -74,9 +76,10 @@ func (s *Simulator) ensureEventsScheduled() {
 	// This is simple, correct, and not performance-critical (called rarely)
 	s.queue.Clear()
 
-	// Schedule write events (if rate > 0)
+	// Schedule write scheduler event (if rate > 0)
+	// This continuously schedules writes at the configured rate
 	if s.config.WriteRateMBps > 0 {
-		s.scheduleNextWrite(s.virtualTime)
+		s.scheduleNextScheduleWrite(s.virtualTime)
 	}
 
 	// Always schedule compaction checks
@@ -90,10 +93,15 @@ func (s *Simulator) ensureEventsScheduled() {
 // The actual amount of virtual time advanced is determined by SimulationSpeedMultiplier.
 // This is the ONLY method that advances the simulation.
 func (s *Simulator) Step() {
+	// If OOM already occurred, don't process any more events
+	if s.metrics.IsOOMKilled {
+		return
+	}
+
 	// Invariant check: Queue should never be empty after initialization
-	// WriteEvent and CompactionCheckEvent are self-perpetuating
+	// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
 	if s.queue.IsEmpty() {
-		panic("BUG: Event queue is empty! Self-perpetuating events (WriteEvent, CompactionCheckEvent) should keep it populated.")
+		panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
 	}
 
 	// Base step size: 1.0 second of virtual time per iteration
@@ -114,6 +122,10 @@ func (s *Simulator) Step() {
 			event := s.queue.Pop()
 			s.virtualTime = event.Timestamp()
 			s.processEvent(event)
+			// If OOM occurred during event processing, stop immediately
+			if s.metrics.IsOOMKilled {
+				return
+			}
 		}
 
 		// Advance to target time even if no events
@@ -123,9 +135,40 @@ func (s *Simulator) Step() {
 		// Total memtables = 1 active + immutable ones waiting to flush
 		numMemtables := 1 + s.numImmutableMemtables
 		// Count stalled writes (WriteEvents in queue that are rescheduled due to stall)
+		isStalled := s.stallStartTime > 0
 		stalledCount := s.countStalledWrites()
+
+		// Check OOM condition periodically while stalled (not just when processing writes)
+		// This ensures OOM is detected even if stalled writes are scheduled far in the future
+		// Use actual queued write count (each write is 1 MB) rather than duration-based calculation
+		// to account for cumulative backlog across multiple stalls
+		if isStalled && s.config.MaxStalledWriteMemoryMB > 0 && !s.metrics.IsOOMKilled {
+			// Calculate backlog as number of queued writes * write size (1 MB per write)
+			actualBacklogMB := float64(stalledCount) * 1.0 // Each write is 1 MB
+
+			// Also check duration-based backlog for the current stall (for logging/debugging)
+			stallDuration := s.virtualTime - s.stallStartTime
+			durationBasedBacklogMB := stallDuration * s.config.WriteRateMBps
+
+			// Use the actual queued write count for OOM detection (more accurate)
+			if actualBacklogMB > float64(s.config.MaxStalledWriteMemoryMB) {
+				s.logEvent("[t=%.1fs] OOM KILLED: Stalled write backlog exceeded limit (%.1f MB > %d MB, queued writes: %d, current stall duration: %.2fs, duration-based estimate: %.1f MB)",
+					s.virtualTime, actualBacklogMB, s.config.MaxStalledWriteMemoryMB, stalledCount, stallDuration, durationBasedBacklogMB)
+				s.queue.Clear() // Stop all events
+				s.metrics.IsStalled = true
+				s.metrics.IsOOMKilled = true
+				return
+			}
+		}
+
 		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps,
-			s.isWriteStalled, stalledCount)
+			isStalled, stalledCount, s.config.MaxBackgroundJobs, s.config)
+
+		// Invariant check: Queue should never be empty after initialization (unless OOM killed)
+		// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
+		if s.queue.IsEmpty() && !s.metrics.IsOOMKilled {
+			panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
+		}
 	}
 
 	// Log queue size periodically (every 100 seconds of virtual time)
@@ -147,8 +190,10 @@ func (s *Simulator) Reset() {
 	s.activeCompactions = make(map[int]bool)
 	s.activeCompactionInfos = make([]*ActiveCompactionInfo, 0)
 	s.pendingCompactions = make(map[int]*CompactionJob)
-	s.isWriteStalled = false
 	s.stallStartTime = 0
+	s.stalledWriteBacklog = 0
+	s.nextFlushCompletionTime = 0
+	s.metrics.IsOOMKilled = false // Clear OOM flag on reset
 
 	// Pre-populate LSM with initial data if configured
 	if s.config.InitialLSMSizeMB > 0 {
@@ -330,6 +375,8 @@ func (s *Simulator) processEvent(event Event) {
 		s.processCompaction(e)
 	case *CompactionCheckEvent:
 		s.processCompactionCheck(e)
+	case *ScheduleWriteEvent:
+		s.processScheduleWrite(e)
 	default:
 		panic(fmt.Sprintf("unknown event type: %T", e))
 	}
@@ -370,28 +417,65 @@ func (s *Simulator) processEvent(event Event) {
 func (s *Simulator) processWrite(event *WriteEvent) {
 	// Write stall check - matches RocksDB's max_write_buffer_number limit
 	if s.numImmutableMemtables >= s.config.MaxWriteBufferNumber {
-		// Write stall! Reschedule this write for 1ms later (matches RocksDB's check interval)
-		// Only log on state transition (entering stall) to avoid log spam
-		if !s.isWriteStalled {
-			s.isWriteStalled = true
+		// Write stall! Initialize stall state if this is the first stalled write
+		isFirstStall := s.stallStartTime == 0
+		if isFirstStall {
 			s.stallStartTime = s.virtualTime
+			s.stalledWriteBacklog = 0
+			// Log only when entering stall state (not for every retry)
 			s.logEvent("[t=%.1fs] WRITE STALL: %d immutable memtables (max=%d), writes delayed",
 				s.virtualTime, s.numImmutableMemtables, s.config.MaxWriteBufferNumber)
 		}
-		stallTime := s.virtualTime + 0.001 // 1ms = 0.001 seconds
-		s.queue.Push(NewWriteEvent(stallTime, event.SizeMB()))
+
+		// Calculate backlog based on stall duration and write rate
+		// This is more accurate than counting events, especially at high simulation speeds
+		stallDuration := s.virtualTime - s.stallStartTime
+		estimatedBacklogMB := stallDuration * s.config.WriteRateMBps
+
+		// Increment backlog counter for tracking
+		s.stalledWriteBacklog++
+
+		// Check OOM condition: if backlog exceeds threshold, stop simulation
+		// Use actual queued write count (each write is 1 MB) for more accurate OOM detection
+		// This accounts for cumulative backlog across multiple stalls
+		actualBacklogMB := float64(s.countStalledWrites()) * 1.0 // Each write is 1 MB
+		if s.config.MaxStalledWriteMemoryMB > 0 && actualBacklogMB > float64(s.config.MaxStalledWriteMemoryMB) {
+			s.logEvent("[t=%.1fs] OOM KILLED: Stalled write backlog exceeded limit (%.1f MB > %d MB, queued writes: %d, current stall duration: %.2fs, duration-based estimate: %.1f MB)",
+				s.virtualTime, actualBacklogMB, s.config.MaxStalledWriteMemoryMB, s.countStalledWrites(), stallDuration, estimatedBacklogMB)
+			s.queue.Clear() // Stop all events
+			s.metrics.IsStalled = true
+			s.metrics.IsOOMKilled = true
+			return
+		}
+
+		// Reschedule this write - use flush-aware scheduling to avoid event explosion
+		// Schedule retry at next flush completion time, or fallback to 1ms if no flush scheduled
+		var stallTime float64
+		if s.nextFlushCompletionTime > s.virtualTime {
+			// Schedule retry slightly after flush completes to ensure flush processes first
+			stallTime = s.nextFlushCompletionTime + 0.0001
+		} else if s.diskBusyUntil > s.virtualTime {
+			// No flush scheduled yet, but disk will be free - schedule retry then
+			// (next flush likely to start around that time)
+			stallTime = s.diskBusyUntil
+		} else {
+			// Fallback: no flush scheduled, schedule 1ms retry (matches RocksDB's check interval)
+			stallTime = s.virtualTime + 0.001 // 1ms = 0.001 seconds
+		}
+		s.queue.Push(NewStalledWriteEvent(stallTime, event.SizeMB()))
 		return
 	}
 
 	// Stall cleared - log if we were previously stalled
-	if s.isWriteStalled {
-		s.isWriteStalled = false
+	if s.stallStartTime > 0 {
 		duration := s.virtualTime - s.stallStartTime
 		// Accumulate stall duration in metrics
 		s.metrics.StallDurationSeconds += duration
-		s.logEvent("[t=%.1fs] WRITE STALL CLEARED: %d immutable memtables (max=%d), writes resuming (stall duration: %.3fs)",
-			s.virtualTime, s.numImmutableMemtables, s.config.MaxWriteBufferNumber, duration)
+		s.logEvent("[t=%.1fs] WRITE STALL CLEARED: %d immutable memtables (max=%d), writes resuming (stall duration: %.3fs, backlog cleared: %d writes)",
+			s.virtualTime, s.numImmutableMemtables, s.config.MaxWriteBufferNumber, duration, s.stalledWriteBacklog)
 		s.stallStartTime = 0
+		s.stalledWriteBacklog = 0     // Clear backlog when stall clears
+		s.nextFlushCompletionTime = 0 // No need to track flush completion time when not stalled
 	}
 
 	// Add write to memtable
@@ -450,10 +534,21 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 
 		// Schedule flush event with the SIZE that was frozen (not current memtable)
 		s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
+
+		// Track earliest flush completion time if we're stalled
+		// This allows stalled writes to schedule retries at flush completion instead of every 1ms
+		if s.numImmutableMemtables >= s.config.MaxWriteBufferNumber {
+			// Find the earliest flush event (which might be the one we just scheduled, or an earlier one)
+			earliestFlush := s.queue.FindNextFlushEvent()
+			if earliestFlush != nil {
+				s.nextFlushCompletionTime = earliestFlush.Timestamp()
+			}
+		}
 	}
 
-	// Schedule next write
-	s.scheduleNextWrite(s.virtualTime)
+	// Writes are now scheduled continuously by ScheduleWriteEvent, independent of
+	// whether individual writes succeed or are stalled. This ensures writes arrive
+	// at the configured rate regardless of system state.
 }
 
 // processFlush processes a flush event (memtable → L0 SST file)
@@ -515,6 +610,22 @@ func (s *Simulator) processFlush(event *FlushEvent) {
 	s.metrics.CompleteWrite(event.Timestamp(), -1) // -1 = flush
 	s.metrics.RecordFlush(file.SizeMB, event.StartTime(), event.Timestamp())
 
+	// Update nextFlushCompletionTime for stalled writes
+	// If still stalled, find the next flush completion time
+	if s.numImmutableMemtables >= s.config.MaxWriteBufferNumber {
+		// Still stalled - find next flush completion time
+		nextFlush := s.queue.FindNextFlushEvent()
+		if nextFlush != nil {
+			s.nextFlushCompletionTime = nextFlush.Timestamp()
+		} else {
+			// No more flushes scheduled - fallback to 1ms retries
+			s.nextFlushCompletionTime = 0
+		}
+	} else {
+		// Stall cleared - no need to track flush completion time
+		s.nextFlushCompletionTime = 0
+	}
+
 	// Compactions are handled by periodic CompactionCheckEvent, not triggered by flushes
 	// This is acceptable - RocksDB also uses background threads that wake up periodically
 }
@@ -574,10 +685,14 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 		return
 	}
 
+	// Detect trivial move: no overlapping files in target level = metadata-only operation
+	// RocksDB optimization: just updates file metadata (level pointer), no disk writes
+	isTrivialMove := len(job.TargetFiles) == 0 && !job.IsIntraL0 && inputSize == outputSize
+
 	// Move from in-progress to completed
 	s.metrics.CompleteWrite(event.Timestamp(), fromLevel)
 	inputFileCount := len(job.SourceFiles) + len(job.TargetFiles)
-	s.metrics.RecordCompaction(inputSize, outputSize, event.StartTime(), event.Timestamp(), fromLevel, inputFileCount, outputFileCount)
+	s.metrics.RecordCompaction(inputSize, outputSize, event.StartTime(), event.Timestamp(), fromLevel, inputFileCount, outputFileCount, isTrivialMove)
 
 	// DON'T immediately schedule another compaction after this one completes
 	// Compactions are scheduled by periodic CompactionCheckEvent (background threads)
@@ -864,12 +979,13 @@ func (s *Simulator) processCompactionCheck(event *CompactionCheckEvent) {
 	s.scheduleNextCompactionCheck(s.virtualTime)
 }
 
-// scheduleNextWrite schedules the next write event based on write rate
-func (s *Simulator) scheduleNextWrite(currentTime float64) {
+// processScheduleWrite processes a ScheduleWriteEvent
+// This continuously schedules new writes at the configured rate, independent of
+// whether writes are being stalled or not. This separation allows for flexible
+// write arrival patterns (e.g., different distributions in the future).
+func (s *Simulator) processScheduleWrite(event *ScheduleWriteEvent) {
 	// Don't schedule writes if rate is 0 or negative
 	if s.config.WriteRateMBps <= 0 {
-		fmt.Printf("[WRITE] Skipping write scheduling: rate=%.1f MB/s (t=%.1f)\n",
-			s.config.WriteRateMBps, currentTime)
 		return
 	}
 
@@ -879,14 +995,24 @@ func (s *Simulator) scheduleNextWrite(currentTime float64) {
 	writeSizeMB := 1.0
 	intervalSeconds := writeSizeMB / s.config.WriteRateMBps
 
-	nextWriteTime := currentTime + intervalSeconds
-	s.queue.Push(NewWriteEvent(nextWriteTime, writeSizeMB))
+	// Schedule the write event at current time (or slightly in the future to avoid ordering issues)
+	writeTime := s.virtualTime
+	s.queue.Push(NewWriteEvent(writeTime, writeSizeMB))
 
-	// Log occasionally (every 100 writes) to avoid spam
-	if int(currentTime)%100 == 0 {
-		fmt.Printf("[WRITE] Scheduled write at t=%.1f (interval=%.4fs, rate=%.1f MB/s)\n",
-			nextWriteTime, intervalSeconds, s.config.WriteRateMBps)
+	// Schedule the next ScheduleWriteEvent
+	nextSchedulerTime := s.virtualTime + intervalSeconds
+	s.scheduleNextScheduleWrite(nextSchedulerTime)
+}
+
+// scheduleNextScheduleWrite schedules the next ScheduleWriteEvent
+func (s *Simulator) scheduleNextScheduleWrite(currentTime float64) {
+	if s.config.WriteRateMBps <= 0 {
+		return
 	}
+	writeSizeMB := 1.0
+	intervalSeconds := writeSizeMB / s.config.WriteRateMBps
+	nextSchedulerTime := currentTime + intervalSeconds
+	s.queue.Push(NewScheduleWriteEvent(nextSchedulerTime))
 }
 
 // scheduleNextCompactionCheck schedules the next compaction check
@@ -898,21 +1024,14 @@ func (s *Simulator) scheduleNextCompactionCheck(currentTime float64) {
 	s.queue.Push(NewCompactionCheckEvent(nextCheckTime))
 }
 
-// countStalledWrites estimates the number of stalled write events in the queue
+// countStalledWrites counts the number of WriteEvents in the queue
+// This provides an accurate count of stalled writes (excluding compaction events)
 func (s *Simulator) countStalledWrites() int {
-	if !s.isWriteStalled {
+	if s.stallStartTime == 0 {
 		return 0
 	}
-	// Count WriteEvents in queue that are scheduled after current time
-	// (these are stalled writes waiting to be retried)
-	// We need to peek at the queue without modifying it
-	// Since we can't iterate safely, we'll estimate based on queue size
-	// A more accurate count would require queue inspection, but for metrics
-	// this approximation is sufficient
-	queueSize := s.queue.Len()
-	// Rough estimate: if we're stalled, some portion of queue is stalled writes
-	// In practice, during a stall, most writes are WriteEvents waiting to retry
-	return queueSize
+	// Count only WriteEvents in queue (excludes compaction/flush events)
+	return s.queue.CountWriteEvents()
 }
 
 // ActiveCompactions returns a list of levels currently being compacted

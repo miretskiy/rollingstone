@@ -64,6 +64,7 @@ export const useStore = create<AppStore>((set, get) => ({
         initialLSMSizeMB: 0,
         simulationSpeedMultiplier: 1,
         randomSeed: 0,
+        maxStalledWriteMemoryMB: 4096, // 4GB default OOM threshold
     },
     currentMetrics: null,
     metricsHistory: [],

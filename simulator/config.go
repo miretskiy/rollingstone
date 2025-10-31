@@ -31,6 +31,7 @@ type SimConfig struct {
 	InitialLSMSizeMB          int   `json:"initialLSMSizeMB"`          // Pre-populate LSM with this much data (0 = start empty, useful for skipping warmup)
 	SimulationSpeedMultiplier int   `json:"simulationSpeedMultiplier"` // Process N events per step (1 = real-time feel, 10 = 10x faster)
 	RandomSeed                int64 `json:"randomSeed"`                // Random seed for reproducibility (0 = use time-based seed)
+	MaxStalledWriteMemoryMB   int   `json:"maxStalledWriteMemoryMB"`   // OOM threshold: stop simulation if stalled write backlog exceeds this (default 4096 MB = 4GB)
 }
 
 // DefaultConfig returns sensible defaults based on RocksDB documentation
@@ -55,6 +56,7 @@ func DefaultConfig() SimConfig {
 		InitialLSMSizeMB:                 0,     // 0 = start empty
 		SimulationSpeedMultiplier:        1,     // 1 = process 1 event per step (real-time feel)
 		RandomSeed:                       0,     // 0 = use time-based seed
+		MaxStalledWriteMemoryMB:          4096,  // 4GB OOM threshold (reasonable default for simulator)
 	}
 }
 

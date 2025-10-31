@@ -10,6 +10,7 @@ const (
 	EventTypeFlush
 	EventTypeCompaction
 	EventTypeCompactionCheck
+	EventTypeScheduleWrite
 )
 
 func (et EventType) String() string {
@@ -22,6 +23,8 @@ func (et EventType) String() string {
 		return "compaction"
 	case EventTypeCompactionCheck:
 		return "compaction_check"
+	case EventTypeScheduleWrite:
+		return "schedule_write"
 	default:
 		return "unknown"
 	}
@@ -38,12 +41,23 @@ type Event interface {
 type WriteEvent struct {
 	timestamp float64
 	sizeMB    float64
+	isStalled bool // true if this write is stalled (for logging)
 }
 
 func NewWriteEvent(timestamp, sizeMB float64) *WriteEvent {
 	return &WriteEvent{
 		timestamp: timestamp,
 		sizeMB:    sizeMB,
+		isStalled: false,
+	}
+}
+
+// NewStalledWriteEvent creates a stalled write event that logs the stall
+func NewStalledWriteEvent(timestamp, sizeMB float64) *WriteEvent {
+	return &WriteEvent{
+		timestamp: timestamp,
+		sizeMB:    sizeMB,
+		isStalled: true,
 	}
 }
 
@@ -125,4 +139,23 @@ func (e *CompactionCheckEvent) Timestamp() float64 { return e.timestamp }
 func (e *CompactionCheckEvent) Type() EventType    { return EventTypeCompactionCheck }
 func (e *CompactionCheckEvent) String() string {
 	return fmt.Sprintf("CompactionCheck(t=%.3fs)", e.timestamp)
+}
+
+// ScheduleWriteEvent represents a periodic event that schedules new writes
+// This separates write scheduling from write processing, allowing for flexible
+// write arrival patterns (e.g., different distributions in the future)
+type ScheduleWriteEvent struct {
+	timestamp float64
+}
+
+func NewScheduleWriteEvent(timestamp float64) *ScheduleWriteEvent {
+	return &ScheduleWriteEvent{
+		timestamp: timestamp,
+	}
+}
+
+func (e *ScheduleWriteEvent) Timestamp() float64 { return e.timestamp }
+func (e *ScheduleWriteEvent) Type() EventType    { return EventTypeScheduleWrite }
+func (e *ScheduleWriteEvent) String() string {
+	return fmt.Sprintf("ScheduleWrite(t=%.3fs)", e.timestamp)
 }

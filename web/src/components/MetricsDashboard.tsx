@@ -40,45 +40,69 @@ export function MetricsDashboard() {
                 </div>
 
                 {/* Write Stall Status */}
-                <div className={`bg-dark-card border ${currentMetrics?.isStalled ? 'border-red-500' : 'border-dark-border'} rounded-lg p-4 shadow-lg`}>
+                <div className={`bg-dark-card border ${currentMetrics?.isOOMKilled ? 'border-red-600' : currentMetrics?.isStalled ? 'border-red-500' : 'border-dark-border'} rounded-lg p-4 shadow-lg ${currentMetrics?.isOOMKilled ? 'bg-red-900/20' : ''}`}>
                     <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                            <Activity className={`w-4 h-4 ${currentMetrics?.isStalled ? 'text-red-400 animate-pulse' : 'text-green-400'}`} />
+                            <Activity className={`w-4 h-4 ${currentMetrics?.isOOMKilled ? 'text-red-600 animate-pulse' : currentMetrics?.isStalled ? 'text-red-400 animate-pulse' : 'text-green-400'}`} />
                             <span className="text-sm text-gray-400">Write Stall Status</span>
                         </div>
                     </div>
-                    <div className={`text-3xl font-bold ${currentMetrics?.isStalled ? 'text-red-400' : 'text-green-400'}`}>
-                        {currentMetrics?.isStalled ? 'STALLED' : 'NORMAL'}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1 space-y-1">
-                        {currentMetrics?.isStalled ? (
-                            <div className="text-red-400 font-medium">
-                                {currentMetrics.stalledWriteCount || 0} writes queued
-                                {config && (
-                                    <span className="text-gray-400 ml-1">
-                                        ({formatBytes((currentMetrics.stalledWriteCount || 0) * config.memtableFlushSizeMB)})
-                                    </span>
-                                )}
+                    {currentMetrics?.isOOMKilled ? (
+                        <>
+                            <div className="text-3xl font-bold text-red-600 animate-pulse">
+                                OOM KILLED
                             </div>
-                        ) : (
-                            <div>Writes flowing normally</div>
-                        )}
-                        {/* Always show cumulative metrics if they exist */}
-                        {(currentMetrics?.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0) ||
-                            (currentMetrics?.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0) ? (
-                            <div className="mt-1 space-y-0.5 text-gray-400 border-t border-dark-border pt-1">
-                                {currentMetrics.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0 && config && (
-                                    <div>
-                                        Peak: {currentMetrics.maxStalledWriteCount} writes
-                                        ({formatBytes(currentMetrics.maxStalledWriteCount * config.memtableFlushSizeMB)})
+                            <div className="text-xs text-red-400 mt-1 space-y-1">
+                                <div className="font-bold">Simulation stopped: Out of Memory</div>
+                                <div className="text-gray-400">
+                                    Stalled write backlog exceeded limit ({config?.maxStalledWriteMemoryMB || 4096} MB)
+                                </div>
+                                <div className="text-gray-500 mt-1">
+                                    {currentMetrics.stalledWriteCount || 0} writes queued
+                                    {config && (
+                                        <span className="ml-1">
+                                            ({formatBytes((currentMetrics.stalledWriteCount || 0) * 1)})
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <div className={`text-3xl font-bold ${currentMetrics?.isStalled ? 'text-red-400' : 'text-green-400'}`}>
+                                {currentMetrics?.isStalled ? 'STALLED' : 'NORMAL'}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1 space-y-1">
+                                {currentMetrics?.isStalled ? (
+                                    <div className="text-red-400 font-medium">
+                                        {currentMetrics.stalledWriteCount || 0} writes queued
+                                        {config && (
+                                            <span className="text-gray-400 ml-1">
+                                                ({formatBytes((currentMetrics.stalledWriteCount || 0) * 1)})
+                                            </span>
+                                        )}
                                     </div>
+                                ) : (
+                                    <div>Writes flowing normally</div>
                                 )}
-                                {currentMetrics.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0 && (
-                                    <div>Total stalled: {formatTime(currentMetrics.stallDurationSeconds)}</div>
-                                )}
+                                {/* Always show cumulative metrics if they exist */}
+                                {(currentMetrics?.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0) ||
+                                    (currentMetrics?.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0) ? (
+                                    <div className="mt-1 space-y-0.5 text-gray-400 border-t border-dark-border pt-1">
+                                        {currentMetrics.maxStalledWriteCount && currentMetrics.maxStalledWriteCount > 0 && config && (
+                                            <div>
+                                                Peak: {currentMetrics.maxStalledWriteCount} writes
+                                                ({formatBytes(currentMetrics.maxStalledWriteCount * 1)})
+                                            </div>
+                                        )}
+                                        {currentMetrics.stallDurationSeconds && currentMetrics.stallDurationSeconds > 0 && (
+                                            <div>Total stalled: {formatTime(currentMetrics.stallDurationSeconds)}</div>
+                                        )}
+                                    </div>
+                                ) : null}
                             </div>
-                        ) : null}
-                    </div>
+                        </>
+                    )}
                 </div>
 
                 {/* Write Amplification */}

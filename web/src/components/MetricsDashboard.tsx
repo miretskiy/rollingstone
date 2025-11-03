@@ -233,10 +233,25 @@ export function MetricsDashboard() {
                             const throughput = currentMetrics.perLevelThroughputMBps[idx] || 0;
                             const levelColors = ['text-amber-400', 'text-red-400', 'text-pink-400', 'text-purple-400', 'text-indigo-400', 'text-blue-400', 'text-cyan-400'];
                             const colorClass = levelColors[idx % levelColors.length];
+                            
+                            // For universal compaction, try to determine actual target level from inProgressDetails
+                            let targetLevelLabel = idx + 1;
+                            if (config.compactionStyle === 'universal' && currentMetrics.inProgressDetails) {
+                                // Find the most recent compaction from this level
+                                const compactionFromLevel = currentMetrics.inProgressDetails
+                                    .filter(d => d.fromLevel === idx)
+                                    .sort((a, b) => b.inputMB - a.inputMB)[0]; // Use largest one as most representative
+                                if (compactionFromLevel) {
+                                    targetLevelLabel = compactionFromLevel.toLevel;
+                                } else if (currentState?.baseLevel !== undefined && idx === 0) {
+                                    // For L0, use base level if available
+                                    targetLevelLabel = currentState.baseLevel;
+                                }
+                            }
 
                             return (
                                 <div key={`level${idx}`} className="bg-dark-bg/50 rounded-lg p-3 border border-gray-700">
-                                    <div className="text-xs text-gray-400 mb-1">L{idx}→L{idx + 1}</div>
+                                    <div className="text-xs text-gray-400 mb-1">L{idx}→L{targetLevelLabel}</div>
                                     <div className={`text-2xl font-bold ${colorClass}`}>
                                         {throughput.toFixed(1)}
                                     </div>

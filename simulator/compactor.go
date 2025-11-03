@@ -1,22 +1,5 @@
 package simulator
 
-// pickFileCount selects number of files to compact using distribution
-func pickFileCount(availableFiles int, minFiles int, dist filePicker) int {
-	if availableFiles <= minFiles {
-		return availableFiles
-	}
-	return dist.Pick(minFiles, availableFiles)
-}
-
-// pickOverlapCount estimates overlapping files in target level
-// Uses distribution to model overlaps - Geometric provides better balance than Exponential
-func pickOverlapCount(maxFiles int, dist filePicker) int {
-	if maxFiles == 0 {
-		return 0
-	}
-	return dist.Pick(1, maxFiles)
-}
-
 // Compactor interface for different compaction strategies
 type Compactor interface {
 	// NeedsCompaction checks if a level needs compaction
@@ -41,4 +24,34 @@ type CompactionJob struct {
 	SourceFiles []*SSTFile // Files to compact from source level
 	TargetFiles []*SSTFile // Overlapping files in target level
 	IsIntraL0   bool       // True if this is intra-L0 compaction
+}
+
+// Helper functions shared by both compaction strategies
+
+// pickFileCount selects number of files to compact using distribution
+func pickFileCount(availableFiles int, minFiles int, dist filePicker) int {
+	if availableFiles <= minFiles {
+		return availableFiles
+	}
+	return dist.Pick(minFiles, availableFiles)
+}
+
+// pickOverlapCount estimates overlapping files in target level
+// Uses distribution to model overlaps - Geometric provides better balance than Exponential
+func pickOverlapCount(maxFiles int, dist filePicker) int {
+	if maxFiles == 0 {
+		return 0
+	}
+	return dist.Pick(1, maxFiles)
+}
+
+// selectFiles picks first N files from the level (simulates oldest-first or round-robin)
+func selectFiles(files []*SSTFile, count int) []*SSTFile {
+	if count >= len(files) {
+		return files
+	}
+	if count <= 0 {
+		return nil
+	}
+	return files[:count]
 }

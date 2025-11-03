@@ -1,18 +1,19 @@
 import { useState } from 'react';
-import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle, HelpCircle } from 'lucide-react';
 import { useStore } from '../store';
 import type { SimulationConfig } from '../types';
 import { ConfigInput } from './ConfigInput';
 
 export function SimulationControls() {
   const { connectionStatus, isRunning, start, pause, reset, updateConfig } = useStore();
-  // Read current I/O config for preset selection
+  // Read current config values
   const ioLatency = useStore(state => state.config.ioLatencyMs);
   const ioThroughput = useStore(state => state.config.ioThroughputMBps);
   const writeRate = useStore(state => state.config.writeRateMBps);
   const currentMetrics = useStore(state => state.currentMetrics);
   const maxBackgroundJobs = useStore(state => state.config.maxBackgroundJobs);
   const bufferCapacityMB = useStore(state => state.config.maxStalledWriteMemoryMB) || 4096;
+  const compactionStyle = useStore(state => state.config.compactionStyle) || 'universal';
   
   // Calculate max sustainable rate from config OR from actual metrics if available
   // Use actual metrics if simulation is running and has data, otherwise use theoretical estimate
@@ -25,8 +26,10 @@ export function SimulationControls() {
     minSustainableRate = currentMetrics.minSustainableWriteRateMBps;
   } else {
     // Calculate theoretical estimate from config
-    // Conservative multiplier: 3.0x on base 2.5x overhead = 7.5x total overhead
-    const conservativeOverhead = 2.5 * 3.0;
+    // Adjust based on compaction style
+    const baseOverhead = compactionStyle === 'universal' ? 1.8 : 2.5; // Universal: lower write amplification
+    const conservativeMultiplier = 3.0;
+    const conservativeOverhead = baseOverhead * conservativeMultiplier;
     maxSustainableRate = ioThroughput / (1.0 + conservativeOverhead);
     
     // For worst-case estimate, need to know deepest level and file sizes
@@ -133,6 +136,49 @@ export function SimulationControls() {
           </button>
           {expandedSections.lsm && (
             <div className="p-3 bg-dark-card">
+              {/* Compaction Style Selector */}
+              <div className="mb-3 pb-3 border-b border-dark-border">
+                <label className="text-sm text-gray-300 flex items-center gap-1 mb-2">
+                  Compaction Style
+                  <div className="group relative">
+                    <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                    <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                      Compaction strategy: Leveled (classic RocksDB) or Universal (space-efficient, lower write amplification)
+                    </div>
+                  </div>
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({ compactionStyle: 'leveled' });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      compactionStyle === 'leveled'
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    Leveled
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({ compactionStyle: 'universal' });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      compactionStyle === 'universal'
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    Universal
+                  </button>
+                </div>
+              </div>
+              
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                 <ConfigInput label="Memtable Flush Size" field="memtableFlushSizeMB" min={1} max={512} unit="MB"
                   tooltip="Size at which memtable is flushed to L0" />
@@ -172,6 +218,15 @@ export function SimulationControls() {
                         tooltip="Max total input size for single compaction (RocksDB: max_compaction_bytes)" />
                       <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
                         tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions)" />
+                      {compactionStyle === 'universal' && (
+                        <ConfigInput 
+                          label="Max Size Amplification" 
+                          field="maxSizeAmplificationPercent" 
+                          min={100} 
+                          max={1000} 
+                          unit="%"
+                          tooltip="Maximum allowed space amplification before compaction triggers (RocksDB: max_size_amplification_percent). Default: 200%. Higher values reduce compaction frequency but increase space usage." />
+                      )}
                     </div>
                   </div>
                 )}

@@ -24,6 +24,8 @@ func TestOverlapThrottling_NoContentionAllowsCompaction(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  1,
 		MaxCompactionBytesMB:      1600,
+		MaxSizeAmplificationPercent: 200,
+		CompactionStyle:          CompactionStyleLeveled,
 	}
 
 	sim, err := NewSimulator(config)
@@ -84,6 +86,8 @@ func TestOverlapThrottling_HighContentionBlocksCompaction(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  1,
 		MaxCompactionBytesMB:      1600,
+		MaxSizeAmplificationPercent: 200,
+		CompactionStyle:          CompactionStyleLeveled,
 	}
 
 	sim, err := NewSimulator(config)
@@ -148,6 +152,8 @@ func TestOverlapThrottling_ContentionTracking(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  1,
 		MaxCompactionBytesMB:      1600,
+		MaxSizeAmplificationPercent: 200,
+		CompactionStyle:          CompactionStyleLeveled,
 	}
 
 	sim, err := NewSimulator(config)
@@ -235,6 +241,8 @@ func TestOverlapThrottling_MultipleCompactionsSameSource(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  1,
 		MaxCompactionBytesMB:      1600,
+		MaxSizeAmplificationPercent: 200,
+		CompactionStyle:          CompactionStyleLeveled,
 	}
 
 	sim, err := NewSimulator(config)
@@ -315,6 +323,8 @@ func TestOverlapThrottling_EmptyTargetLevel(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  1,
 		MaxCompactionBytesMB:      1600,
+		MaxSizeAmplificationPercent: 200,
+		CompactionStyle:          CompactionStyleLeveled,
 	}
 
 	sim, err := NewSimulator(config)

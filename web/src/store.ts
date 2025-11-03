@@ -65,7 +65,9 @@ export const useStore = create<AppStore>((set, get) => ({
         simulationSpeedMultiplier: 1,
         randomSeed: 0,
         maxStalledWriteMemoryMB: 4096, // 4GB default OOM threshold
-    },
+        compactionStyle: 'universal', // Default to universal compaction
+        maxSizeAmplificationPercent: 200, // Default RocksDB value
+      },
     currentMetrics: null,
     metricsHistory: [],
     currentState: null,

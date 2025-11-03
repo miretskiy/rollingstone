@@ -6,9 +6,10 @@ interface LevelProps {
     level: LevelState;
     compactionInfos: ActiveCompactionInfo[];
     compactionsSinceUpdate?: CompactionStats;
+    baseLevel?: number; // Base level for universal compaction (only set when compaction style is universal)
 }
 
-function Level({ level, compactionInfos, compactionsSinceUpdate }: LevelProps) {
+function Level({ level, compactionInfos, compactionsSinceUpdate, baseLevel }: LevelProps) {
     const isCompacting = compactionInfos.length > 0;
     const formatSize = (mb: number) => {
         if (mb < 1024) return `${mb.toFixed(1)} MB`;
@@ -57,6 +58,11 @@ function Level({ level, compactionInfos, compactionsSinceUpdate }: LevelProps) {
                             <span className="text-lg font-bold">
                                 {level.level === 0 ? 'L0 (Tiered)' : `L${level.level} (Leveled)`}
                             </span>
+                            {baseLevel !== undefined && level.level === baseLevel && (
+                                <span className="text-xs px-2 py-0.5 bg-purple-600/30 text-purple-300 border border-purple-500 rounded font-semibold" title="Base level: lowest non-empty level below L0. Files below base level are never compacted in universal compaction.">
+                                    BASE
+                                </span>
+                            )}
                             {isCompacting && (() => {
                                 // Aggregate file counts for all compactions
                                 const totalSourceFiles = compactionInfos.reduce((sum, c) => sum + c.sourceFileCount, 0);
@@ -222,6 +228,7 @@ export function LSMTreeVisualization() {
                         level={level}
                         compactionInfos={compactionInfosByLevel.get(level.level) || []}
                         compactionsSinceUpdate={currentMetrics?.compactionsSinceUpdate?.[level.level]}
+                        baseLevel={currentState.baseLevel}
                     />
                 ))}
             </div>

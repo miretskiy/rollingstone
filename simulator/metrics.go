@@ -545,16 +545,24 @@ func (m *Metrics) CalculateWorstCaseSustainableRate(ioThroughputMBps float64, ma
 // by compactions per MB/s of flush rate. For example, if overhead is 2.5x,
 // then 1 MB/s flush requires 2.5 MB/s compaction bandwidth.
 //
+// Universal compaction typically has lower write amplification (1.5-2.0x)
+// compared to leveled compaction (2.5-3.0x), so it allows higher sustainable rates.
+//
 // This uses cumulative averages, which may underestimate actual overhead as
 // the LSM tree grows and compactions get larger. Consider using worst-case
 // calculation (CalculateWorstCaseSustainableRate) for more accurate estimates.
 //
 // Returns conservative estimate based on typical compaction overhead.
-func (m *Metrics) CalculateMaxSustainableWriteRate(ioThroughputMBps float64, maxBackgroundJobs int) float64 {
+func (m *Metrics) CalculateMaxSustainableWriteRate(ioThroughputMBps float64, maxBackgroundJobs int, compactionStyle CompactionStyle) float64 {
 	// Use conservative multiplier to account for worst-case compaction sizes
-	// Base overhead: 2.5x (typical for leveled compaction)
+	// Universal compaction: lower base overhead (1.8x vs 2.5x for leveled)
 	// Conservative multiplier: 3.0x (accounts for worst-case compaction sizes)
-	baseOverhead := 2.5
+	var baseOverhead float64
+	if compactionStyle == CompactionStyleUniversal {
+		baseOverhead = 1.8 // Universal compaction: lower write amplification
+	} else {
+		baseOverhead = 2.5 // Leveled compaction: higher write amplification
+	}
 	conservativeMultiplier := 3.0
 	conservativeOverhead := baseOverhead * conservativeMultiplier
 
@@ -589,7 +597,7 @@ func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int
 	m.CapThroughput(ioThroughputMBps) // Enforce physical disk limits
 
 	// Calculate sustainable rate range
-	m.MaxSustainableWriteRateMBps = m.CalculateMaxSustainableWriteRate(ioThroughputMBps, maxBackgroundJobs)
+	m.MaxSustainableWriteRateMBps = m.CalculateMaxSustainableWriteRate(ioThroughputMBps, maxBackgroundJobs, config.CompactionStyle)
 
 	// Calculate worst-case sustainable rate based on current LSM state
 	// Find deepest non-empty level

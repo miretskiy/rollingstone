@@ -111,6 +111,9 @@ func (s *Simulator) Step() {
 	// Invariant check: Queue should never be empty after initialization
 	// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
 	if s.queue.IsEmpty() {
+		// CRITICAL DEBUG: Log exact state when queue becomes empty
+		fmt.Printf("[BUG] Queue empty at t=%.3f! WriteRate: %.1f, OOM: %v, numImmutableMemtables: %d, activeCompactions: %d\n",
+			s.virtualTime, s.config.WriteRateMBps, s.metrics.IsOOMKilled, s.numImmutableMemtables, 0)
 		panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
 	}
 
@@ -130,7 +133,12 @@ func (s *Simulator) Step() {
 		// Process all events up to target time
 		for !s.queue.IsEmpty() && s.queue.Peek().Timestamp() <= targetTime {
 			event := s.queue.Pop()
-			s.virtualTime = event.Timestamp()
+			// CRITICAL BUG FIX: Virtual time must NEVER go backwards
+			// Use max() to ensure time is monotonic - if event was scheduled earlier but
+			// processing was delayed, we don't want to set time backwards
+			// This prevents time regression when events are processed out of strict order
+			// (e.g., due to SimulationSpeedMultiplier processing multiple steps at once)
+			s.virtualTime = max(s.virtualTime, event.Timestamp())
 			s.processEvent(event)
 			// If OOM occurred during event processing, stop immediately
 			if s.metrics.IsOOMKilled {
@@ -177,6 +185,9 @@ func (s *Simulator) Step() {
 		// Invariant check: Queue should never be empty after initialization (unless OOM killed)
 		// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
 		if s.queue.IsEmpty() && !s.metrics.IsOOMKilled {
+			// CRITICAL DEBUG: Log exact state when queue becomes empty
+			fmt.Printf("[BUG] Queue empty at t=%.3f (after iteration %d)! WriteRate: %.1f, OOM: %v, numImmutableMemtables: %d, activeCompactions: %d\n",
+				s.virtualTime, i, s.config.WriteRateMBps, s.metrics.IsOOMKilled, s.numImmutableMemtables, len(s.pendingCompactions))
 			panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
 		}
 	}
@@ -322,6 +333,22 @@ func (s *Simulator) UpdateConfig(newConfig SimConfig) error {
 			originalSpeedMultiplier, newConfig.SimulationSpeedMultiplier, s.virtualTime)
 	}
 
+	// If compaction style changed, create new compactor
+	if s.config.CompactionStyle != newConfig.CompactionStyle {
+		fmt.Printf("[CONFIG] Compaction style changed: %s → %s (t=%.1f)\n",
+			s.config.CompactionStyle.String(), newConfig.CompactionStyle.String(), s.virtualTime)
+		var compactor Compactor
+		switch newConfig.CompactionStyle {
+		case CompactionStyleLeveled:
+			compactor = NewLeveledCompactor(newConfig.RandomSeed)
+		case CompactionStyleUniversal:
+			compactor = NewUniversalCompactor(newConfig.RandomSeed)
+		default:
+			compactor = NewUniversalCompactor(newConfig.RandomSeed)
+		}
+		s.compactor = compactor
+	}
+
 	s.config = newConfig
 
 	if needsReset {
@@ -370,6 +397,20 @@ func (s *Simulator) State() map[string]interface{} {
 	state["activeCompactionInfos"] = s.activeCompactionInfos
 	state["numImmutableMemtables"] = s.numImmutableMemtables
 	state["immutableMemtableSizesMB"] = s.immutableMemtableSizes
+
+	// Add base level for universal compaction (so UI can display it)
+	if s.config.CompactionStyle == CompactionStyleUniversal {
+		// Calculate base level directly (same logic as UniversalCompactor.findBaseLevel)
+		baseLevel := len(s.lsm.Levels) - 1 // Default to deepest
+		for i := 1; i < len(s.lsm.Levels); i++ {
+			if s.lsm.Levels[i].FileCount > 0 || s.lsm.Levels[i].TotalSize > 0 {
+				baseLevel = i
+				break // Found first non-empty, stop
+			}
+		}
+		state["baseLevel"] = baseLevel
+	}
+
 	return state
 }
 
@@ -471,6 +512,9 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 			// Fallback: no flush scheduled, schedule 1ms retry (matches RocksDB's check interval)
 			stallTime = s.virtualTime + 0.001 // 1ms = 0.001 seconds
 		}
+		// CRITICAL BUG FIX: Ensure stallTime is never in the past
+		// If nextFlushCompletionTime or diskBusyUntil are stale, ensure we schedule at >= virtualTime
+		stallTime = max(stallTime, s.virtualTime)
 		s.queue.Push(NewStalledWriteEvent(stallTime, event.SizeMB()))
 		return
 	}
@@ -724,142 +768,21 @@ func (s *Simulator) tryScheduleCompaction() bool {
 		return false
 	}
 
-	// Find the highest-scoring level that isn't already compacting
-	// RocksDB uses VersionStorageInfo::ComputeCompactionScore() to prioritize
-	// Higher score = more urgent (either too many L0 files or level exceeds target)
-	type levelScore struct {
-		level int
-		score float64
-	}
-
-	// Calculate total_downcompact_bytes for accurate scoring
-	totalDowncompactBytes := calculateTotalDowncompactBytes(s.lsm, s.config)
-
-	// Calculate scores for all levels
-	scores := make([]levelScore, 0, len(s.lsm.Levels))
-	for i := 0; i < len(s.lsm.Levels)-1; i++ {
-		score := s.lsm.calculateCompactionScore(i, s.config, totalDowncompactBytes)
-		scores = append(scores, levelScore{level: i, score: score})
-	}
-
-	// Sort by score descending
-	for i := 0; i < len(scores); i++ {
-		for j := i + 1; j < len(scores); j++ {
-			if scores[j].score > scores[i].score {
-				scores[i], scores[j] = scores[j], scores[i]
-			}
-		}
-	}
-
-	// Find first eligible level (not already compacting, target not too busy, score > threshold)
-	var levelToCompact int = -1
-	for _, ls := range scores {
-		// Compactor handles activeCompactions tracking (checks in PickCompaction)
-
-		// FIDELITY: ⚠️ SIMPLIFIED - Overlap-based compaction throttling
-		//
-		// RocksDB Reference: CompactionPicker::RangeOverlapWithCompaction()
-		// https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker.cc#L277-L305
-		//
-		// C++ snippet from CompactionPicker::RangeOverlapWithCompaction():
-		//   ```cpp
-		//   bool CompactionPicker::RangeOverlapWithCompaction(
-		//       const Slice& smallest_user_key, const Slice& largest_user_key,
-		//       int level) const {
-		//     const Comparator* ucmp = icmp_->user_comparator();
-		//     for (Compaction* c : compactions_in_progress_) {
-		//       if (c->output_level() == level &&
-		//           ucmp->Compare(c->GetLargestUserKey(), smallest_user_key) > 0 &&
-		//           ucmp->Compare(c->GetSmallestUserKey(), largest_user_key) < 0) {
-		//         return true;  // Overlaps!
-		//       }
-		//     }
-		//     return false;
-		//   }
-		//   ```
-		//
-		// RocksDB prevents starting a new compaction if key ranges overlap with
-		// in-progress compactions at the target level. We simulate this WITHOUT
-		// tracking actual keys by using statistical "resource contention":
-		//
-		// - Track how many files at target level are being compacted
-		// - Don't start if >50% of target level files are already busy
-		// - This simulates the worst-case where our exponential distribution
-		//   picks many overlapping files (high contention scenario)
-		//
-		// FIDELITY: ✓ Behavior matches RocksDB's overlap check in spirit
-		// FIDELITY: ⚠️ Uses statistical approximation instead of key-range tracking
-		targetLevelIdx := ls.level + 1
-		// Check target level contention (skip for intra-L0 since we'll check later)
-		if targetLevelIdx < len(s.lsm.Levels) {
-			targetLevel := s.lsm.Levels[targetLevelIdx]
-			// Check target level contention - don't start if >50% of files are busy
-			if targetLevel.FileCount > 0 && targetLevel.TargetCompactingFiles > 0 {
-				contentionRatio := float64(targetLevel.TargetCompactingFiles) / float64(targetLevel.FileCount)
-				if contentionRatio > 0.5 {
-					// Target level too busy - skip this compaction
-					fmt.Printf("[CONTENTION] t=%.1f: L%d→L%d: target level too busy (%.1f%% contention: %d/%d files busy)\n",
-						s.virtualTime, ls.level, targetLevelIdx, contentionRatio*100, targetLevel.TargetCompactingFiles, targetLevel.FileCount)
-					continue
-				}
-			}
-		}
-
-		// Check threshold (use dynamic threshold for L1+ based on target level size)
-		threshold := 1.0
-		if ls.level > 0 {
-			targetLevel := s.lsm.Levels[targetLevelIdx]
-			if targetLevel.FileCount == 0 {
-				threshold = 2.0
-			} else if targetLevel.FileCount < 3 {
-				threshold = 1.5
-			}
-		}
-
-		if ls.score > threshold {
-			levelToCompact = ls.level
-			break
-		}
-	}
-
-	if levelToCompact < 0 {
-		return false // No level needs compaction
-	}
-
-	// Debug: show scores (only for first compaction in batch)
-	if len(s.pendingCompactions) == 0 {
-		fmt.Printf("[SCORE] Compaction check at t=%.1f (L0: %d files, %.1f MB, downcompact=%.1fMB)\n",
-			s.virtualTime, s.lsm.Levels[0].FileCount, s.lsm.Levels[0].TotalSize, totalDowncompactBytes)
-		for i := 0; i < len(s.lsm.Levels); i++ {
-			score := s.lsm.calculateCompactionScore(i, s.config, totalDowncompactBytes)
-			activeMarker := ""
-			if _, isPending := s.pendingCompactions[i]; isPending {
-				activeMarker = " [ACTIVE]"
-			}
-			compactingMarker := ""
-			if s.lsm.Levels[i].CompactingSize > 0 {
-				compactingMarker = fmt.Sprintf(", compacting=%.1fMB", s.lsm.Levels[i].CompactingSize)
-			}
-			fmt.Printf("[SCORE]   L%d: score=%.2f, files=%d, size=%.1f MB%s%s\n",
-				i, score, s.lsm.Levels[i].FileCount, s.lsm.Levels[i].TotalSize, compactingMarker, activeMarker)
-		}
-	}
-
-	// Find the score for the level we picked
-	pickedScore := 0.0
-	for _, ls := range scores {
-		if ls.level == levelToCompact {
-			pickedScore = ls.score
-			break
-		}
-	}
-	fmt.Printf("[SCHEDULE] t=%.1f: Picked L%d for compaction (score=%.2f)\n",
-		s.virtualTime, levelToCompact, pickedScore)
-
-	// Pick files to compact
+	// Delegate compaction scheduling logic to the compactor
+	// Compactor internally tracks active compactions and picks the best compaction
 	job := s.compactor.PickCompaction(s.lsm, s.config)
 	if job == nil {
-		fmt.Printf("[SCHEDULE] L%d: PickCompaction returned nil job\n", levelToCompact)
+		return false // No compaction needed
+	}
+
+	// Check if we've hit max parallel compactions
+	// For now, we approximate by checking if we have too many pending compactions
+	// TODO: Compactor should track this internally and return nil when at capacity
+	activeCount := len(s.pendingCompactions)
+	if activeCount >= s.config.MaxBackgroundJobs {
+		// Can't schedule more - but compactor should have prevented this
+		// If we get here, there's a bug: compactor returned a job when at capacity
+		fmt.Printf("[WARNING] PickCompaction returned job but at max capacity (%d/%d)\n", activeCount, s.config.MaxBackgroundJobs)
 		return false
 	}
 
@@ -980,7 +903,12 @@ func (s *Simulator) processCompactionCheck(event *CompactionCheckEvent) {
 	}
 
 	// Schedule next compaction check (every 1 virtual second, simulating background thread wake-ups)
-	s.scheduleNextCompactionCheck(s.virtualTime)
+	// CRITICAL: Always schedule from current virtualTime, NEVER from event.Timestamp()
+	// Discrete event simulators should NEVER schedule events in the past
+	// If event was processed late, schedule next event from NOW, not from event's timestamp
+	checkInterval := 1.0
+	nextCheckTime := s.virtualTime + checkInterval
+	s.queue.Push(NewCompactionCheckEvent(nextCheckTime))
 }
 
 // processScheduleWrite processes a ScheduleWriteEvent
@@ -999,11 +927,16 @@ func (s *Simulator) processScheduleWrite(event *ScheduleWriteEvent) {
 	writeSizeMB := 1.0
 	intervalSeconds := writeSizeMB / s.config.WriteRateMBps
 
-	// Schedule the write event at current time (or slightly in the future to avoid ordering issues)
+	// Schedule the write event at current virtualTime (NOW)
+	// CRITICAL: Always schedule from current virtualTime, NEVER from event.Timestamp()
+	// Discrete event simulators should NEVER schedule events in the past
+	// If event was processed late, schedule write from NOW, not from event's timestamp
 	writeTime := s.virtualTime
 	s.queue.Push(NewWriteEvent(writeTime, writeSizeMB))
 
 	// Schedule the next ScheduleWriteEvent
+	// CRITICAL: Always schedule from current virtualTime, NEVER from event.Timestamp()
+	// This ensures self-perpetuating events are never scheduled in the past
 	nextSchedulerTime := s.virtualTime + intervalSeconds
 	s.scheduleNextScheduleWrite(nextSchedulerTime)
 }
@@ -1041,6 +974,7 @@ func (s *Simulator) countStalledWrites() int {
 // ActiveCompactions returns a list of levels currently being compacted
 // Gets data from pendingCompactions (compactor manages its own internal tracking)
 func (s *Simulator) ActiveCompactions() []int {
+	// Return levels that have pending compactions
 	active := make([]int, 0, len(s.pendingCompactions))
 	for level := range s.pendingCompactions {
 		active = append(active, level)

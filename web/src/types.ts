@@ -20,6 +20,8 @@ export interface SimulationConfig {
     simulationSpeedMultiplier: number;
     randomSeed: number;
     maxStalledWriteMemoryMB?: number;
+    compactionStyle?: "leveled" | "universal"; // Compaction strategy (default "universal")
+    maxSizeAmplificationPercent?: number; // max_size_amplification_percent for universal compaction (default 200%)
 }
 
 export interface CompactionStats {
@@ -91,6 +93,7 @@ export interface SimulationState {
     activeCompactionInfos?: ActiveCompactionInfo[]; // Detailed compaction info
     numImmutableMemtables?: number; // Number of immutable memtables waiting to flush
     immutableMemtableSizesMB?: number[]; // Sizes of immutable memtables waiting to flush
+    baseLevel?: number; // Base level for universal compaction (lowest non-empty level below L0)
 }
 
 export interface SimulationEvent {

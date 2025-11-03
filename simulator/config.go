@@ -1,5 +1,10 @@
 package simulator
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // CompactionStyle represents the compaction strategy
 // RocksDB Reference: compaction_style in db/options.h
 // GitHub: https://github.com/facebook/rocksdb/blob/main/include/rocksdb/options.h
@@ -22,6 +27,37 @@ func (cs CompactionStyle) String() string {
 	}
 }
 
+// ParseCompactionStyle parses a string into CompactionStyle
+func ParseCompactionStyle(s string) (CompactionStyle, error) {
+	switch s {
+	case "leveled":
+		return CompactionStyleLeveled, nil
+	case "universal":
+		return CompactionStyleUniversal, nil
+	default:
+		return CompactionStyleUniversal, fmt.Errorf("invalid compaction style: %s (must be 'leveled' or 'universal')", s)
+	}
+}
+
+// MarshalJSON implements json.Marshaler for CompactionStyle
+func (cs CompactionStyle) MarshalJSON() ([]byte, error) {
+	return json.Marshal(cs.String())
+}
+
+// UnmarshalJSON implements json.Unmarshaler for CompactionStyle
+func (cs *CompactionStyle) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseCompactionStyle(s)
+	if err != nil {
+		return err
+	}
+	*cs = parsed
+	return nil
+}
+
 // SimConfig holds all simulation parameters based on RocksDB tuning guide
 // References: https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide
 type SimConfig struct {
@@ -41,19 +77,17 @@ type SimConfig struct {
 	CompactionReductionFactor float64 `json:"compactionReductionFactor"` // Custom: deduplication/compression (0.5-1.0)
 
 	// Compaction Parallelism & Performance
-	MaxBackgroundJobs                int     `json:"maxBackgroundJobs"`                // max_background_jobs (default 2) - parallel compactions
-	MaxSubcompactions                int     `json:"maxSubcompactions"`                // max_subcompactions (default 1) - intra-compaction parallelism
-	MaxCompactionBytesMB             int     `json:"maxCompactionBytesMB"`             // max_compaction_bytes - max total input size for single compaction (0 = auto: 25x target_file_size_base, per db/column_family.cc)
-	IOLatencyMs                      float64 `json:"ioLatencyMs"`                      // Disk IO latency in milliseconds (seek time)
-	IOThroughputMBps                 float64 `json:"ioThroughputMBps"`                 // Sequential I/O throughput in MB/s (for compaction duration)
-	NumLevels                        int     `json:"numLevels"`                        // LSM tree depth (default 7)
-	LevelCompactionDynamicLevelBytes bool    `json:"levelCompactionDynamicLevelBytes"` // level_compaction_dynamic_level_bytes (default false for intuition, true in RocksDB 8.6+)
+	MaxBackgroundJobs                int             `json:"maxBackgroundJobs"`                // max_background_jobs (default 2) - parallel compactions
+	MaxSubcompactions                int             `json:"maxSubcompactions"`                // max_subcompactions (default 1) - intra-compaction parallelism
+	MaxCompactionBytesMB             int             `json:"maxCompactionBytesMB"`             // max_compaction_bytes - max total input size for single compaction (0 = auto: 25x target_file_size_base, per db/column_family.cc)
+	IOLatencyMs                      float64         `json:"ioLatencyMs"`                      // Disk IO latency in milliseconds (seek time)
+	IOThroughputMBps                 float64         `json:"ioThroughputMBps"`                 // Sequential I/O throughput in MB/s (for compaction duration)
+	NumLevels                        int             `json:"numLevels"`                        // LSM tree depth (default 7)
+	LevelCompactionDynamicLevelBytes bool            `json:"levelCompactionDynamicLevelBytes"` // level_compaction_dynamic_level_bytes (default false for intuition, true in RocksDB 8.6+)
+	CompactionStyle                  CompactionStyle `json:"compactionStyle"`                  // compaction_style: "leveled" or "universal" (default "universal")
 
 	// Universal Compaction Options
-	MaxSizeAmplificationPercent int `json:"maxSizeAmplificationPercent"` // max_size_amplification_percent (default 200) - universal compaction only
-
-	// Compaction Style
-	CompactionStyle CompactionStyle `json:"compactionStyle"` // compaction_style (default leveled) - which compaction strategy to use
+	MaxSizeAmplificationPercent int `json:"maxSizeAmplificationPercent"` // max_size_amplification_percent (default 200%, RocksDB allows 0 to UINT_MAX) - max allowed space amplification before compaction triggers. 0 = trigger on any amplification, very high values (e.g., 9000) allow extreme amplification before triggering
 
 	// Simulation Control
 	InitialLSMSizeMB          int   `json:"initialLSMSizeMB"`          // Pre-populate LSM with this much data (0 = start empty, useful for skipping warmup)
@@ -65,28 +99,28 @@ type SimConfig struct {
 // DefaultConfig returns sensible defaults based on RocksDB documentation
 func DefaultConfig() SimConfig {
 	return SimConfig{
-		WriteRateMBps:                    10.0,                   // 10 MB/s write rate
-		MemtableFlushSizeMB:              64,                     // 64MB memtable (RocksDB default)
-		MaxWriteBufferNumber:             2,                      // 2 memtables max (RocksDB default)
-		L0CompactionTrigger:              4,                      // 4 L0 files trigger compaction (RocksDB default)
-		MaxBytesForLevelBaseMB:           256,                    // 256MB L1 target (RocksDB default)
-		LevelMultiplier:                  10,                     // 10x multiplier (RocksDB default)
-		TargetFileSizeMB:                 64,                     // 64MB SST files (RocksDB default)
-		TargetFileSizeMultiplier:         2,                      // 2x multiplier per level (L1=64MB, L2=128MB, L3=256MB, etc.)
-		CompactionReductionFactor:        0.9,                    // 10% reduction (dedup/compression)
-		MaxBackgroundJobs:                2,                      // 2 parallel compactions (RocksDB default)
-		MaxSubcompactions:                1,                      // No intra-compaction parallelism (RocksDB default)
-		MaxCompactionBytesMB:             1600,                   // 25x target_file_size_base (RocksDB typical default)
-		IOLatencyMs:                      1.0,                    // 1ms latency (EBS gp3 baseline)
-		IOThroughputMBps:                 125.0,                  // 125 MB/s throughput (EBS gp3 baseline)
-		NumLevels:                        7,                      // 7 levels (RocksDB default)
-		LevelCompactionDynamicLevelBytes: false,                  // false for more intuitive level sizing
-		MaxSizeAmplificationPercent:      200,                    // 200% (RocksDB default for universal compaction)
-		CompactionStyle:                  CompactionStyleLeveled, // Default to leveled compaction
-		InitialLSMSizeMB:                 0,                      // 0 = start empty
-		SimulationSpeedMultiplier:        1,                      // 1 = process 1 event per step (real-time feel)
-		RandomSeed:                       0,                      // 0 = use time-based seed
-		MaxStalledWriteMemoryMB:          4096,                   // 4GB OOM threshold (reasonable default for simulator)
+		WriteRateMBps:                    10.0,                     // 10 MB/s write rate
+		MemtableFlushSizeMB:              64,                       // 64MB memtable (RocksDB default)
+		MaxWriteBufferNumber:             2,                        // 2 memtables max (RocksDB default)
+		L0CompactionTrigger:              4,                        // 4 L0 files trigger compaction (RocksDB default)
+		MaxBytesForLevelBaseMB:           256,                      // 256MB L1 target (RocksDB default)
+		LevelMultiplier:                  10,                       // 10x multiplier (RocksDB default)
+		TargetFileSizeMB:                 64,                       // 64MB SST files (RocksDB default)
+		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level (L1=64MB, L2=128MB, L3=256MB, etc.)
+		CompactionReductionFactor:        0.9,                      // 10% reduction (dedup/compression)
+		MaxBackgroundJobs:                2,                        // 2 parallel compactions (RocksDB default)
+		MaxSubcompactions:                1,                        // No intra-compaction parallelism (RocksDB default)
+		MaxCompactionBytesMB:             1600,                     // 25x target_file_size_base (RocksDB typical default)
+		IOLatencyMs:                      1.0,                      // 1ms latency (EBS gp3 baseline)
+		IOThroughputMBps:                 125.0,                    // 125 MB/s throughput (EBS gp3 baseline)
+		NumLevels:                        7,                        // 7 levels (RocksDB default)
+		LevelCompactionDynamicLevelBytes: false,                    // false for more intuitive level sizing
+		CompactionStyle:                  CompactionStyleUniversal, // Universal compaction (default as per user request)
+		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
+		InitialLSMSizeMB:                 0,                        // 0 = start empty
+		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step (real-time feel)
+		RandomSeed:                       0,                        // 0 = use time-based seed
+		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
 	}
 }
 
@@ -94,25 +128,27 @@ func DefaultConfig() SimConfig {
 // Useful for understanding basic LSM behavior: Memtable → L0 → L1
 func ThreeLevelConfig() SimConfig {
 	return SimConfig{
-		WriteRateMBps:                    10.0,                   // 10 MB/s write rate
-		MemtableFlushSizeMB:              64,                     // 64MB memtable
-		MaxWriteBufferNumber:             2,                      // 2 memtables max
-		L0CompactionTrigger:              4,                      // 4 L0 files trigger compaction
-		MaxBytesForLevelBaseMB:           256,                    // 256MB L1 target
-		LevelMultiplier:                  10,                     // 10x multiplier (but only 3 levels total)
-		TargetFileSizeMB:                 64,                     // 64MB SST files
-		TargetFileSizeMultiplier:         2,                      // 2x multiplier per level
-		CompactionReductionFactor:        0.9,                    // 10% reduction
-		MaxBackgroundJobs:                2,                      // 2 parallel compactions
-		MaxSubcompactions:                1,                      // No intra-compaction parallelism
-		IOLatencyMs:                      5.0,                    // 5ms seek time
-		IOThroughputMBps:                 500.0,                  // 500 MB/s throughput
-		NumLevels:                        3,                      // Only 3 levels: Memtable, L0, L1
-		LevelCompactionDynamicLevelBytes: false,                  // false for more intuitive level sizing
-		CompactionStyle:                  CompactionStyleLeveled, // Default to leveled compaction
-		InitialLSMSizeMB:                 0,                      // 0 = start empty
-		SimulationSpeedMultiplier:        1,                      // 1 = process 1 event per step
-		RandomSeed:                       0,                      // 0 = use time-based seed
+		WriteRateMBps:                    10.0,                     // 10 MB/s write rate
+		MemtableFlushSizeMB:              64,                       // 64MB memtable
+		MaxWriteBufferNumber:             2,                        // 2 memtables max
+		L0CompactionTrigger:              4,                        // 4 L0 files trigger compaction
+		MaxBytesForLevelBaseMB:           256,                      // 256MB L1 target
+		LevelMultiplier:                  10,                       // 10x multiplier (but only 3 levels total)
+		TargetFileSizeMB:                 64,                       // 64MB SST files
+		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level
+		CompactionReductionFactor:        0.9,                      // 10% reduction
+		MaxBackgroundJobs:                2,                        // 2 parallel compactions
+		MaxSubcompactions:                1,                        // No intra-compaction parallelism
+		IOLatencyMs:                      5.0,                      // 5ms seek time
+		IOThroughputMBps:                 500.0,                    // 500 MB/s throughput
+		NumLevels:                        3,                        // Only 3 levels: Memtable, L0, L1
+		LevelCompactionDynamicLevelBytes: false,                    // false for more intuitive level sizing
+		CompactionStyle:                  CompactionStyleUniversal, // Default to universal
+		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
+		InitialLSMSizeMB:                 0,                        // 0 = start empty
+		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step
+		RandomSeed:                       0,                        // 0 = use time-based seed
+		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
 	}
 }
 
@@ -145,5 +181,14 @@ func (c *SimConfig) Validate() error {
 	if c.NumLevels < 2 || c.NumLevels > 10 {
 		return ErrInvalidConfig("numLevels must be between 2 and 10")
 	}
+	// RocksDB allows max_size_amplification_percent to be any unsigned int (0 to UINT_MAX)
+	// No validation constraints in RocksDB - allows any value including:
+	// - 0: triggers compaction on any positive amplification (aggressive compaction)
+	// - Very high values (e.g., 9000): allows extreme space amplification before triggering
+	// We validate it's non-negative to match RocksDB's unsigned int constraint
+	if c.MaxSizeAmplificationPercent < 0 {
+		return ErrInvalidConfig("maxSizeAmplificationPercent must be >= 0")
+	}
+	// CompactionStyle validation: type-safe enum, no additional validation needed
 	return nil
 }

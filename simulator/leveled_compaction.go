@@ -662,17 +662,6 @@ func (c *LeveledCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree, c
 	return inputSize, outputSize, numOutputFiles
 }
 
-// selectFiles picks first N files from the level (simulates oldest-first or round-robin)
-func selectFiles(files []*SSTFile, count int) []*SSTFile {
-	if count >= len(files) {
-		return files
-	}
-	if count <= 0 {
-		return nil
-	}
-	return files[:count]
-}
-
 // removeFiles removes specified files from a level
 func (l *Level) removeFiles(filesToRemove []*SSTFile) {
 	if len(filesToRemove) == 0 {

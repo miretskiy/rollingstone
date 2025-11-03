@@ -232,21 +232,12 @@ func TestLeveledCompactorPickCompaction(t *testing.T) {
 		t.Logf("Picked %d source files, %d target files", len(job.SourceFiles), len(job.TargetFiles))
 	})
 
-	t.Run("invalid level returns nil", func(t *testing.T) {
+	t.Run("empty LSM returns nil", func(t *testing.T) {
 		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 
-		// Invalid level - but PickCompaction doesn't take level parameter anymore
-		// It will return nil if no valid compaction is found
 		job := compactor.PickCompaction(lsm, config)
 		if job != nil {
-			t.Error("Expected nil for invalid level")
-		}
-
-		// Out of range level - PickCompaction doesn't take level parameter anymore
-		// It will return nil if no valid compaction is found
-		job = compactor.PickCompaction(lsm, config)
-		if job != nil {
-			t.Error("Expected nil for out of range level")
+			t.Error("Expected nil for empty LSM")
 		}
 	})
 
@@ -608,6 +599,8 @@ func TestTrivialMove(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// CRITICAL MISSING TESTS - Universal Compaction TDD Approach
 // ============================================================================
 // Following TDD principles: Write test FIRST, verify against RocksDB behavior,
 // then fix code if needed. NEVER adjust test expectations without proving code correctness.

@@ -281,10 +281,9 @@ func (c *UniversalCompactor) checkSizeAmplification(lsm *LSMTree, baseLevel int,
 	amplificationPercent := (sizeAboveBase / sizeAtBase) * 100.0
 
 	// Use configurable threshold (default 200%)
+	// RocksDB behavior: value of 0 means compaction triggers on any amplification (>0)
+	// Very high values (e.g., 9000) allow extreme amplification before triggering
 	maxSizeAmpPercent := float64(config.MaxSizeAmplificationPercent)
-	if maxSizeAmpPercent <= 0 {
-		maxSizeAmpPercent = 200.0 // Fallback to default
-	}
 
 	return amplificationPercent > maxSizeAmpPercent
 }

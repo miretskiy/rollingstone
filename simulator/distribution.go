@@ -113,3 +113,25 @@ func NewDistribution(distType DistributionType) Distribution {
 		return &UniformDistribution{}
 	}
 }
+
+// filePicker interface for selecting files (internal to compactor)
+type filePicker interface {
+	Pick(min, max int) int
+}
+
+// Adapter to use distribution.go with existing code
+type distributionAdapter struct {
+	dist Distribution
+	rng  *rand.Rand
+}
+
+func (da *distributionAdapter) Pick(min, max int) int {
+	return da.dist.Sample(da.rng, min, max)
+}
+
+func newDistributionAdapter(distType DistributionType) filePicker {
+	return &distributionAdapter{
+		dist: NewDistribution(distType),
+		rng:  rand.New(rand.NewSource(rand.Int63())), // Could be injected for testing
+	}
+}

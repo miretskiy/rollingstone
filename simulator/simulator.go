@@ -27,7 +27,6 @@ type Simulator struct {
 	numImmutableMemtables   int                     // Memtables waiting to flush (in addition to active)
 	immutableMemtableSizes  []float64               // Sizes (MB) of immutable memtables waiting to flush
 	compactor               Compactor               // Compaction strategy
-	activeCompactions       map[int]bool            // Track which levels are actively compacting
 	activeCompactionInfos   []*ActiveCompactionInfo // Detailed info about active compactions
 	pendingCompactions      map[int]*CompactionJob  // Jobs waiting to execute (keyed by fromLevel)
 	stallStartTime          float64                 // When the current stall started (0 if not stalled)
@@ -46,6 +45,18 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 
 	lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 
+	// Create appropriate compactor based on compaction style
+	var compactor Compactor
+	switch config.CompactionStyle {
+	case CompactionStyleLeveled:
+		compactor = NewLeveledCompactor(config.RandomSeed)
+	case CompactionStyleUniversal:
+		compactor = NewUniversalCompactor(config.RandomSeed)
+	default:
+		// Default to universal compaction
+		compactor = NewUniversalCompactor(config.RandomSeed)
+	}
+
 	sim := &Simulator{
 		config:                  config,
 		lsm:                     lsm,
@@ -55,8 +66,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		diskBusyUntil:           0,
 		numImmutableMemtables:   0,
 		immutableMemtableSizes:  make([]float64, 0),
-		compactor:               NewLeveledCompactor(config.RandomSeed),
-		activeCompactions:       make(map[int]bool),
+		compactor:               compactor,
 		activeCompactionInfos:   make([]*ActiveCompactionInfo, 0),
 		pendingCompactions:      make(map[int]*CompactionJob),
 		stallStartTime:          0,
@@ -187,7 +197,6 @@ func (s *Simulator) Reset() {
 	s.diskBusyUntil = 0
 	s.numImmutableMemtables = 0
 	s.immutableMemtableSizes = make([]float64, 0)
-	s.activeCompactions = make(map[int]bool)
 	s.activeCompactionInfos = make([]*ActiveCompactionInfo, 0)
 	s.pendingCompactions = make(map[int]*CompactionJob)
 	s.stallStartTime = 0
@@ -634,8 +643,7 @@ func (s *Simulator) processFlush(event *FlushEvent) {
 func (s *Simulator) processCompaction(event *CompactionEvent) {
 	fromLevel := event.FromLevel()
 
-	// Mark level as no longer compacting
-	delete(s.activeCompactions, fromLevel)
+	// Compactor handles activeCompactions tracking (cleared in ExecuteCompaction)
 
 	// Retrieve the compaction job
 	job, ok := s.pendingCompactions[fromLevel]
@@ -712,7 +720,7 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 func (s *Simulator) tryScheduleCompaction() bool {
 	// Check if we've hit max parallel compactions
 	// RocksDB's max_background_jobs limits concurrent compaction threads
-	if len(s.activeCompactions) >= s.config.MaxBackgroundJobs {
+	if len(s.pendingCompactions) >= s.config.MaxBackgroundJobs {
 		return false
 	}
 
@@ -746,10 +754,7 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	// Find first eligible level (not already compacting, target not too busy, score > threshold)
 	var levelToCompact int = -1
 	for _, ls := range scores {
-		// Skip if source level is already compacting
-		if s.activeCompactions[ls.level] {
-			continue
-		}
+		// Compactor handles activeCompactions tracking (checks in PickCompaction)
 
 		// FIDELITY: ⚠️ SIMPLIFIED - Overlap-based compaction throttling
 		//
@@ -822,13 +827,13 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	}
 
 	// Debug: show scores (only for first compaction in batch)
-	if len(s.activeCompactions) == 0 {
+	if len(s.pendingCompactions) == 0 {
 		fmt.Printf("[SCORE] Compaction check at t=%.1f (L0: %d files, %.1f MB, downcompact=%.1fMB)\n",
 			s.virtualTime, s.lsm.Levels[0].FileCount, s.lsm.Levels[0].TotalSize, totalDowncompactBytes)
 		for i := 0; i < len(s.lsm.Levels); i++ {
 			score := s.lsm.calculateCompactionScore(i, s.config, totalDowncompactBytes)
 			activeMarker := ""
-			if s.activeCompactions[i] {
+			if _, isPending := s.pendingCompactions[i]; isPending {
 				activeMarker = " [ACTIVE]"
 			}
 			compactingMarker := ""
@@ -852,7 +857,7 @@ func (s *Simulator) tryScheduleCompaction() bool {
 		s.virtualTime, levelToCompact, pickedScore)
 
 	// Pick files to compact
-	job := s.compactor.PickCompaction(levelToCompact, s.lsm, s.config)
+	job := s.compactor.PickCompaction(s.lsm, s.config)
 	if job == nil {
 		fmt.Printf("[SCHEDULE] L%d: PickCompaction returned nil job\n", levelToCompact)
 		return false
@@ -891,8 +896,7 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	// Reserve disk bandwidth
 	s.diskBusyUntil = compactionCompleteTime
 
-	// Mark level as compacting and track compacting bytes
-	s.activeCompactions[job.FromLevel] = true
+	// Compactor handles activeCompactions tracking (marked in PickCompaction)
 
 	// Track detailed compaction info for UI
 	info := &ActiveCompactionInfo{
@@ -968,7 +972,7 @@ func (s *Simulator) tryScheduleCompaction() bool {
 func (s *Simulator) processCompactionCheck(event *CompactionCheckEvent) {
 	// Try to schedule compactions to fill all available slots
 	// Loop until we've filled all MaxBackgroundJobs slots or no more levels need compaction
-	for len(s.activeCompactions) < s.config.MaxBackgroundJobs {
+	for len(s.pendingCompactions) < s.config.MaxBackgroundJobs {
 		scheduled := s.tryScheduleCompaction()
 		if !scheduled {
 			break // No more levels need compaction
@@ -1035,9 +1039,10 @@ func (s *Simulator) countStalledWrites() int {
 }
 
 // ActiveCompactions returns a list of levels currently being compacted
+// Gets data from pendingCompactions (compactor manages its own internal tracking)
 func (s *Simulator) ActiveCompactions() []int {
-	active := make([]int, 0, len(s.activeCompactions))
-	for level := range s.activeCompactions {
+	active := make([]int, 0, len(s.pendingCompactions))
+	for level := range s.pendingCompactions {
 		active = append(active, level)
 	}
 	return active

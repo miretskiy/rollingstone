@@ -120,8 +120,9 @@ func TestOverlapThrottling_HighContentionBlocksCompaction(t *testing.T) {
 	// if it scheduled L0→L1 specifically
 	if scheduled {
 		// Check if it was L0→L1
-		if len(sim.activeCompactions) > 0 {
-			if sim.activeCompactions[0] {
+		activeComps := sim.ActiveCompactions()
+		if len(activeComps) > 0 {
+			if activeComps[0] == 0 {
 				t.Errorf("Expected L0→L1 compaction to be blocked due to high contention on L1")
 			}
 		}
@@ -198,7 +199,6 @@ func TestOverlapThrottling_ContentionTracking(t *testing.T) {
 	}
 
 	// Manually trigger completion logic
-	delete(sim.activeCompactions, 1)
 	delete(sim.pendingCompactions, 1)
 
 	// Reduce counts
@@ -260,14 +260,30 @@ func TestOverlapThrottling_MultipleCompactionsSameSource(t *testing.T) {
 	}
 
 	// Verify L1 is marked as active
-	if !sim.activeCompactions[1] {
+	activeComps := sim.ActiveCompactions()
+	hasL1 := false
+	for _, level := range activeComps {
+		if level == 1 {
+			hasL1 = true
+			break
+		}
+	}
+	if !hasL1 {
 		t.Errorf("Expected L1 to be marked as actively compacting")
 	}
 
 	// Try to schedule another compaction - should be blocked because L1 is already active
 	scheduled2 := sim.tryScheduleCompaction()
 	// It should either not schedule anything, or schedule a different level
-	if scheduled2 && sim.activeCompactions[1] && len(sim.activeCompactionInfos) > 1 {
+	activeComps2 := sim.ActiveCompactions()
+	hasL1_2 := false
+	for _, level := range activeComps2 {
+		if level == 1 {
+			hasL1_2 = true
+			break
+		}
+	}
+	if scheduled2 && hasL1_2 && len(sim.activeCompactionInfos) > 1 {
 		// Count how many are from L1
 		l1Count := 0
 		for _, info := range sim.activeCompactionInfos {

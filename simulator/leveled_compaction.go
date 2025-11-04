@@ -449,6 +449,69 @@ func (c *LeveledCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree, c
 		delete(c.activeCompactions, job.FromLevel)
 	}()
 
+	// Handle subcompactions: execute each subcompaction in parallel
+	//
+	// RocksDB Reference: CompactionJob::RunSubcompactions()
+	// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_job.cc#L710-L735
+	//
+	// RocksDB C++ (lines 710-735):
+	//
+	//	void CompactionJob::RunSubcompactions() {
+	//	  const size_t num_threads = compact_->sub_compact_states.size();
+	//	  assert(num_threads > 0);
+	//	  // Launch a thread for each of subcompactions 1...num_threads-1
+	//	  std::vector<port::Thread> thread_pool;
+	//	  thread_pool.reserve(num_threads - 1);
+	//	  for (size_t i = 1; i < compact_->sub_compact_states.size(); i++) {
+	//	    thread_pool.emplace_back(&CompactionJob::ProcessKeyValueCompaction, this,
+	//	                             &compact_->sub_compact_states[i]);
+	//	  }
+	//	  // Always schedule the first subcompaction (whether or not there are also
+	//	  // others) in the current thread to be efficient with resources
+	//	  ProcessKeyValueCompaction(compact_->sub_compact_states.data());
+	//	  // Wait for all other threads (if there are any) to finish execution
+	//	  for (auto& thread : thread_pool) {
+	//	    thread.join();
+	//	  }
+	//	}
+	//
+	// FIDELITY: ✓ Matches RocksDB's parallel execution model
+	// ⚠️ SIMPLIFIED: Subcompactions execute sequentially in simulation (modeled as parallel)
+	// - RocksDB: truly parallel threads
+	// - Simulator: execute sequentially but aggregate results as if parallel
+	// - Duration calculated as max(subcompaction durations) in scheduling code
+	if len(job.Subcompactions) > 0 {
+		// Execute each subcompaction independently
+		// All subcompactions run in parallel (modeled by max duration in scheduling)
+		for _, subcompaction := range job.Subcompactions {
+			// Create a temporary CompactionJob for this subcompaction
+			subJob := &CompactionJob{
+				FromLevel:   job.FromLevel,
+				ToLevel:     job.ToLevel,
+				SourceFiles: subcompaction.SourceFiles,
+				TargetFiles: subcompaction.TargetFiles,
+				IsIntraL0:   job.IsIntraL0,
+			}
+
+			// Execute this subcompaction (recurse, but without subcompactions to avoid infinite loop)
+			subInput, subOutput, subFileCount := c.executeCompactionSingle(subJob, lsm, config, virtualTime)
+			inputSize += subInput
+			outputSize += subOutput
+			outputFileCount += subFileCount
+		}
+
+		fmt.Printf("[SUBPCOMPACTION] L%d→L%d: Executed %d subcompactions, total input=%.1fMB, output=%.1fMB, %d files\n",
+			job.FromLevel, job.ToLevel, len(job.Subcompactions), inputSize, outputSize, outputFileCount)
+		return inputSize, outputSize, outputFileCount
+	}
+
+	// Single compaction (no subcompactions) - execute normally
+	return c.executeCompactionSingle(job, lsm, config, virtualTime)
+}
+
+// executeCompactionSingle performs a single compaction (without subcompactions)
+// This is the core compaction logic extracted from ExecuteCompaction
+func (c *LeveledCompactor) executeCompactionSingle(job *CompactionJob, lsm *LSMTree, config SimConfig, virtualTime float64) (inputSize, outputSize float64, outputFileCount int) {
 	// Check for trivial move: no overlapping files in target level
 	//
 	// RocksDB Reference: TryExtendNonL0TrivialMove() and related logic
@@ -485,13 +548,13 @@ func (c *LeveledCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree, c
 
 		// Only do trivial move if no source files are in target level
 		if !hasFilesFromTargetLevel {
-			fmt.Printf("[TRIVIAL MOVE] L%d→L%d: Moving %d files (%.1f MB) without rewriting\n",
-				job.FromLevel, job.ToLevel, len(job.SourceFiles), inputSize)
-
 			// Calculate input size for metrics
 			for _, f := range job.SourceFiles {
 				inputSize += f.SizeMB
 			}
+
+			fmt.Printf("[TRIVIAL MOVE] L%d→L%d: Moving %d files (%.1f MB) without rewriting\n",
+				job.FromLevel, job.ToLevel, len(job.SourceFiles), inputSize)
 
 			// Trivial move: output = input (no reduction)
 			outputSize = inputSize

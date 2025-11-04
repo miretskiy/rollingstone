@@ -217,15 +217,15 @@ export function SimulationControls() {
                       <ConfigInput label="Max Compaction Bytes" field="maxCompactionBytesMB" min={100} max={10000} unit="MB"
                         tooltip="Max total input size for single compaction (RocksDB: max_compaction_bytes)" />
                       <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
-                        tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions)" />
+                        tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions). Default: 1 (disabled). Splits large compactions into multiple parallel subcompactions, reducing compaction duration. Applies to L0→L1 compactions for leveled style, and L0→L1+ compactions for universal style. Higher values (e.g., 4-8) can significantly speed up large L0 compactions." />
                       {compactionStyle === 'universal' && (
                         <ConfigInput 
                           label="Max Size Amplification" 
                           field="maxSizeAmplificationPercent" 
-                          min={100} 
-                          max={1000} 
+                          min={0} 
+                          max={10000} 
                           unit="%"
-                          tooltip="Maximum allowed space amplification before compaction triggers (RocksDB: max_size_amplification_percent). Default: 200%. Higher values reduce compaction frequency but increase space usage." />
+                          tooltip="Maximum allowed space amplification before compaction triggers (RocksDB: max_size_amplification_percent). Default: 200%. Higher values reduce compaction frequency but increase space usage. Value of 0 triggers compaction on any amplification, very high values (e.g., 9000) allow extreme amplification before triggering." />
                       )}
                     </div>
                   </div>

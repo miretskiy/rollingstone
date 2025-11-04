@@ -93,22 +93,37 @@ func (e *FlushEvent) SizeMB() float64 { return e.sizeMB }
 
 // CompactionEvent represents a compaction from one level to another
 type CompactionEvent struct {
-	timestamp    float64
-	startTime    float64 // When the compaction started
-	fromLevel    int
-	toLevel      int
-	inputSizeMB  float64
-	outputSizeMB float64
+	timestamp          float64
+	startTime          float64 // When the compaction started
+	fromLevel          int
+	toLevel            int
+	inputSizeMB        float64
+	outputSizeMB       float64
+	subcompactionCount int // Number of subcompactions (0 = single compaction, >0 = subcompactions)
 }
 
 func NewCompactionEvent(timestamp, startTime float64, fromLevel, toLevel int, inputSizeMB, outputSizeMB float64) *CompactionEvent {
 	return &CompactionEvent{
-		timestamp:    timestamp,
-		startTime:    startTime,
-		fromLevel:    fromLevel,
-		toLevel:      toLevel,
-		inputSizeMB:  inputSizeMB,
-		outputSizeMB: outputSizeMB,
+		timestamp:          timestamp,
+		startTime:          startTime,
+		fromLevel:          fromLevel,
+		toLevel:            toLevel,
+		inputSizeMB:        inputSizeMB,
+		outputSizeMB:       outputSizeMB,
+		subcompactionCount: 0, // Default: single compaction
+	}
+}
+
+// NewCompactionEventWithSubcompactions creates a compaction event with subcompaction count
+func NewCompactionEventWithSubcompactions(timestamp, startTime float64, fromLevel, toLevel int, inputSizeMB, outputSizeMB float64, subcompactionCount int) *CompactionEvent {
+	return &CompactionEvent{
+		timestamp:          timestamp,
+		startTime:          startTime,
+		fromLevel:          fromLevel,
+		toLevel:            toLevel,
+		inputSizeMB:        inputSizeMB,
+		outputSizeMB:       outputSizeMB,
+		subcompactionCount: subcompactionCount,
 	}
 }
 
@@ -116,6 +131,10 @@ func (e *CompactionEvent) Timestamp() float64 { return e.timestamp }
 func (e *CompactionEvent) StartTime() float64 { return e.startTime }
 func (e *CompactionEvent) Type() EventType    { return EventTypeCompaction }
 func (e *CompactionEvent) String() string {
+	if e.subcompactionCount > 0 {
+		return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB, %d subcompactions)",
+			e.timestamp, e.fromLevel, e.toLevel, e.inputSizeMB, e.outputSizeMB, e.subcompactionCount)
+	}
 	return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB)",
 		e.timestamp, e.fromLevel, e.toLevel, e.inputSizeMB, e.outputSizeMB)
 }
@@ -123,6 +142,7 @@ func (e *CompactionEvent) FromLevel() int        { return e.fromLevel }
 func (e *CompactionEvent) ToLevel() int          { return e.toLevel }
 func (e *CompactionEvent) InputSizeMB() float64  { return e.inputSizeMB }
 func (e *CompactionEvent) OutputSizeMB() float64 { return e.outputSizeMB }
+func (e *CompactionEvent) SubcompactionCount() int { return e.subcompactionCount }
 
 // CompactionCheckEvent represents a periodic check for compactions (simulates background threads)
 type CompactionCheckEvent struct {

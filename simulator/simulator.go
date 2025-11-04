@@ -3,6 +3,7 @@ package simulator
 import (
 	"fmt"
 	"math"
+	"math/rand"
 )
 
 // ActiveCompactionInfo tracks details of an in-progress compaction
@@ -789,28 +790,117 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	fmt.Printf("[SCHEDULE] t=%.1f: L%d→L%d: scheduling compaction with %d source files, %d target files\n",
 		s.virtualTime, job.FromLevel, job.ToLevel, len(job.SourceFiles), len(job.TargetFiles))
 
+	// Check if subcompactions should be formed and split the job if needed
+	//
+	// RocksDB Reference: CompactionJob::Prepare() and GenSubcompactionBoundaries()
+	// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_job.cc#L256-L280
+	//
+	// RocksDB C++ (lines 277-280):
+	//
+	//	if (!known_single_subcompact.has_value() && c->ShouldFormSubcompactions()) {
+	//	  StopWatch sw(db_options_.clock, stats_, SUBCOMPACTION_SETUP_TIME);
+	//	  GenSubcompactionBoundaries();
+	//	}
+	//
+	// FIDELITY: ✓ Matches RocksDB's subcompaction splitting timing
+	// Subcompactions are split at scheduling time, before duration calculation
+	if ShouldFormSubcompactions(job, s.config, s.config.CompactionStyle) {
+		// Get RNG from compactor (both leveled and universal have it)
+		var rng *rand.Rand
+		switch c := s.compactor.(type) {
+		case *LeveledCompactor:
+			rng = c.rng
+		case *UniversalCompactor:
+			rng = c.rng
+		default:
+			panic(fmt.Sprintf("unknown compactor type: %T", s.compactor))
+		}
+
+		// Split into subcompactions
+		subcompactions := splitIntoSubcompactions(job, s.config, rng)
+		if len(subcompactions) > 0 {
+			job.Subcompactions = subcompactions
+			fmt.Printf("[SCHEDULE] Split compaction into %d subcompactions\n", len(subcompactions))
+		}
+	}
+
 	// Calculate input and output sizes
+	// If subcompactions exist, calculate based on subcompactions (they split the work)
 	var inputSize float64
-	for _, f := range job.SourceFiles {
-		inputSize += f.SizeMB
-	}
-	for _, f := range job.TargetFiles {
-		inputSize += f.SizeMB
-	}
+	var outputSize float64
+	var compactionDuration float64
 
-	// Apply reduction factor
-	var reductionFactor float64
-	if job.FromLevel == 0 && job.ToLevel == 1 {
-		reductionFactor = s.config.CompactionReductionFactor
+	if len(job.Subcompactions) > 0 {
+		// Subcompactions: calculate duration as max(subcompaction durations)
+		//
+		// RocksDB Reference: CompactionJob::RunSubcompactions()
+		// Subcompactions run in parallel, so total duration = max(subcompaction durations)
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_job.cc#L710-L735
+		//
+		// FIDELITY: ✓ Matches RocksDB's parallel execution model
+		// - Subcompactions execute in parallel threads
+		// - Total duration = max(subcompaction durations) + small overhead
+		maxSubcompactionDuration := 0.0
+		for _, subcompaction := range job.Subcompactions {
+			// Calculate input size for this subcompaction
+			var subInputSize float64
+			for _, f := range subcompaction.SourceFiles {
+				subInputSize += f.SizeMB
+			}
+			for _, f := range subcompaction.TargetFiles {
+				subInputSize += f.SizeMB
+			}
+
+			// Apply reduction factor
+			var reductionFactor float64
+			if job.FromLevel == 0 && job.ToLevel == 1 {
+				reductionFactor = s.config.CompactionReductionFactor
+			} else {
+				reductionFactor = 0.99 // Minimal dedup for deeper levels
+			}
+			subOutputSize := subInputSize * reductionFactor
+
+			// Calculate duration for this subcompaction
+			subIOTimeSec := (subInputSize + subOutputSize) / s.config.IOThroughputMBps
+			subSeekTimeSec := s.config.IOLatencyMs / 1000.0
+			subDuration := subIOTimeSec + subSeekTimeSec
+
+			if subDuration > maxSubcompactionDuration {
+				maxSubcompactionDuration = subDuration
+			}
+
+			// Accumulate total sizes
+			inputSize += subInputSize
+			outputSize += subOutputSize
+		}
+
+		// Total duration = max(subcompaction durations) + small overhead
+		// Overhead accounts for synchronization, thread coordination, etc.
+		const subcompactionOverhead = 0.01 // 10ms overhead
+		compactionDuration = maxSubcompactionDuration + subcompactionOverhead
 	} else {
-		reductionFactor = 0.99 // Minimal dedup for deeper levels
-	}
-	outputSize := inputSize * reductionFactor
+		// Single compaction (no subcompactions)
+		for _, f := range job.SourceFiles {
+			inputSize += f.SizeMB
+		}
+		for _, f := range job.TargetFiles {
+			inputSize += f.SizeMB
+		}
 
-	// Calculate compaction duration: time to read input + write output
-	ioTimeSec := (inputSize + outputSize) / s.config.IOThroughputMBps
-	seekTimeSec := s.config.IOLatencyMs / 1000.0
-	compactionDuration := ioTimeSec + seekTimeSec
+		// Apply reduction factor
+		var reductionFactor float64
+		if job.FromLevel == 0 && job.ToLevel == 1 {
+			reductionFactor = s.config.CompactionReductionFactor
+		} else {
+			reductionFactor = 0.99 // Minimal dedup for deeper levels
+		}
+		outputSize = inputSize * reductionFactor
+
+		// Calculate compaction duration: time to read input + write output
+		ioTimeSec := (inputSize + outputSize) / s.config.IOThroughputMBps
+		seekTimeSec := s.config.IOLatencyMs / 1000.0
+		compactionDuration = ioTimeSec + seekTimeSec
+	}
 
 	// Compaction can only start when disk is free
 	compactionStartTime := max(s.virtualTime, s.diskBusyUntil)
@@ -851,8 +941,14 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	// Track this write as in-progress for throughput calculation
 	s.metrics.StartWrite(inputSize, outputSize, compactionStartTime, compactionCompleteTime, job.FromLevel, job.ToLevel)
 
-	// Schedule compaction event
-	s.queue.Push(NewCompactionEvent(compactionCompleteTime, compactionStartTime, job.FromLevel, job.ToLevel, inputSize, outputSize))
+	// Schedule compaction event (with subcompaction count if applicable)
+	var compactionEvent *CompactionEvent
+	if len(job.Subcompactions) > 0 {
+		compactionEvent = NewCompactionEventWithSubcompactions(compactionCompleteTime, compactionStartTime, job.FromLevel, job.ToLevel, inputSize, outputSize, len(job.Subcompactions))
+	} else {
+		compactionEvent = NewCompactionEvent(compactionCompleteTime, compactionStartTime, job.FromLevel, job.ToLevel, inputSize, outputSize)
+	}
+	s.queue.Push(compactionEvent)
 
 	return true
 }

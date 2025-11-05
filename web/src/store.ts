@@ -67,6 +67,7 @@ export const useStore = create<AppStore>((set, get) => ({
         maxStalledWriteMemoryMB: 4096, // 4GB default OOM threshold
         compactionStyle: 'universal', // Default to universal compaction
         maxSizeAmplificationPercent: 200, // Default RocksDB value
+        levelCompactionDynamicLevelBytes: false, // Default false when compactionStyle is universal
       },
     currentMetrics: null,
     metricsHistory: [],
@@ -159,7 +160,21 @@ export const useStore = create<AppStore>((set, get) => ({
     },
 
     updateConfig: (configUpdate: Partial<SimulationConfig>) => {
-        const newConfig = { ...get().config, ...configUpdate };
+        const currentConfig = get().config;
+        const newConfig = { ...currentConfig, ...configUpdate };
+        
+        // Automatically disable levelCompactionDynamicLevelBytes when compaction style is universal
+        if (newConfig.compactionStyle === 'universal') {
+            newConfig.levelCompactionDynamicLevelBytes = false;
+        }
+        // Automatically enable levelCompactionDynamicLevelBytes when compaction style is leveled (RocksDB default)
+        else if (newConfig.compactionStyle === 'leveled' && configUpdate.compactionStyle === 'leveled') {
+            // Only enable if explicitly switching to leveled (not if it was already leveled)
+            if (currentConfig.compactionStyle !== 'leveled') {
+                newConfig.levelCompactionDynamicLevelBytes = true;
+            }
+        }
+        
         // Send the FULL config to backend (it expects complete SimConfig)
         get().sendMessage({ type: 'config_update', config: newConfig });
         set({ config: newConfig });

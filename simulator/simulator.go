@@ -399,16 +399,15 @@ func (s *Simulator) State() map[string]interface{} {
 	state["numImmutableMemtables"] = s.numImmutableMemtables
 	state["immutableMemtableSizesMB"] = s.immutableMemtableSizes
 
-	// Add base level for universal compaction (so UI can display it)
+	// Add base level for universal compaction and leveled compaction with dynamic level bytes
+	// FIDELITY: ✓ Unified implementation - uses appropriate method for each compaction style
+	// - Universal compaction: uses calculateBaseLevel() (first non-empty level)
+	// - Leveled compaction with dynamic level bytes: uses calculateDynamicBaseLevel() (based on max level size)
 	if s.config.CompactionStyle == CompactionStyleUniversal {
-		// Calculate base level directly (same logic as UniversalCompactor.findBaseLevel)
-		baseLevel := len(s.lsm.Levels) - 1 // Default to deepest
-		for i := 1; i < len(s.lsm.Levels); i++ {
-			if s.lsm.Levels[i].FileCount > 0 || s.lsm.Levels[i].TotalSize > 0 {
-				baseLevel = i
-				break // Found first non-empty, stop
-			}
-		}
+		baseLevel := s.lsm.calculateBaseLevel()
+		state["baseLevel"] = baseLevel
+	} else if s.config.CompactionStyle == CompactionStyleLeveled && s.config.LevelCompactionDynamicLevelBytes {
+		baseLevel := s.lsm.calculateDynamicBaseLevel(s.config)
 		state["baseLevel"] = baseLevel
 	}
 

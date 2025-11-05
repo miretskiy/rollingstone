@@ -14,6 +14,7 @@ export function SimulationControls() {
   const maxBackgroundJobs = useStore(state => state.config.maxBackgroundJobs);
   const bufferCapacityMB = useStore(state => state.config.maxStalledWriteMemoryMB) || 4096;
   const compactionStyle = useStore(state => state.config.compactionStyle) || 'universal';
+  const levelCompactionDynamicLevelBytes = useStore(state => state.config.levelCompactionDynamicLevelBytes) || false;
   
   // Calculate max sustainable rate from config OR from actual metrics if available
   // Use actual metrics if simulation is running and has data, otherwise use theoretical estimate
@@ -226,6 +227,30 @@ export function SimulationControls() {
                           max={10000} 
                           unit="%"
                           tooltip="Maximum allowed space amplification before compaction triggers (RocksDB: max_size_amplification_percent). Default: 200%. Higher values reduce compaction frequency but increase space usage. Value of 0 triggers compaction on any amplification, very high values (e.g., 9000) allow extreme amplification before triggering." />
+                      )}
+                      {compactionStyle === 'leveled' && (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="levelCompactionDynamicLevelBytes"
+                            checked={levelCompactionDynamicLevelBytes}
+                            onChange={(e) => {
+                              if (!isConnected || isRunning) return;
+                              updateConfig({ levelCompactionDynamicLevelBytes: e.target.checked });
+                            }}
+                            disabled={!isConnected || isRunning}
+                            className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-primary-500 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          />
+                          <label htmlFor="levelCompactionDynamicLevelBytes" className="text-sm text-gray-300 flex items-center gap-1 cursor-pointer">
+                            Dynamic Level Bytes
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Dynamically adjusts level sizes based on actual data distribution (RocksDB: level_compaction_dynamic_level_bytes). Default: true. When enabled, base_level may not be L1 - it's the first non-empty level. This allows RocksDB to adapt to sparse data distributions and avoid unnecessary intermediate levels.
+                              </div>
+                            </div>
+                          </label>
+                        </div>
                       )}
                     </div>
                   </div>

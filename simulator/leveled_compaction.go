@@ -123,8 +123,23 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 	}
 
 	// Calculate scores for all levels
+	// FIDELITY: ✓ In dynamic mode, only score levels >= base_level
+	// RocksDB Reference: VersionStorageInfo::ComputeCompactionScore() - levels below base_level
+	// have target = 0, so score = 0 (they're unnecessary)
+	// GitHub: https://github.com/facebook/rocksdb/blob/main/db/version_set.cc#L3207-L3305
+	baseLevel := 1 // Default for static mode
+	if config.LevelCompactionDynamicLevelBytes {
+		// FIDELITY: ✓ Use dynamic base level calculation based on max level size
+		// As data grows, base level moves UP (toward L1) to create intermediate levels
+		baseLevel = lsm.calculateDynamicBaseLevel(config)
+	}
+
 	scores := make([]levelScore, 0, len(lsm.Levels))
 	for i := 0; i < len(lsm.Levels)-1; i++ {
+		// In dynamic mode, skip levels below base_level (they're unnecessary)
+		if config.LevelCompactionDynamicLevelBytes && i > 0 && i < baseLevel {
+			continue
+		}
 		score := lsm.calculateCompactionScore(i, config, totalDowncompactBytes)
 		scores = append(scores, levelScore{level: i, score: score})
 	}
@@ -205,7 +220,22 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 		// FIDELITY: ⚠️ Constants (2.0, 1.5, 3) are simulation heuristics, not from RocksDB source
 		// These values prevent premature compaction into empty/under-populated levels
 		threshold := 1.0
-		if ls.level > 0 {
+		// For L0, check target level (base_level in dynamic mode, L1 in static mode)
+		if ls.level == 0 {
+			baseLevel := 1 // Default for static mode
+			if config.LevelCompactionDynamicLevelBytes {
+				baseLevel = lsm.calculateDynamicBaseLevel(config)
+			}
+			targetLevelIdx := baseLevel
+			if targetLevelIdx < len(lsm.Levels) {
+				targetLevel := lsm.Levels[targetLevelIdx]
+				if targetLevel.FileCount == 0 {
+					threshold = 2.0 // Conservative: require 2x over target before compacting into empty level
+				} else if targetLevel.FileCount < 3 {
+					threshold = 1.5 // Moderate: require 1.5x over target when target has few files
+				}
+			}
+		} else if ls.level > 0 {
 			targetLevelIdx := ls.level + 1
 			if targetLevelIdx < len(lsm.Levels) {
 				targetLevel := lsm.Levels[targetLevelIdx]
@@ -236,9 +266,26 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 	c.activeCompactions[level] = true
 
 	if level == 0 {
-		// Always prefer L0→L1 compaction (normal case)
+		// FIDELITY: ✓ In dynamic mode, L0 compacts to base_level (not always L1)
+		// RocksDB Reference: LevelCompactionBuilder::PickCompaction() line 187
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_level.cc#L187
+		//
+		// RocksDB C++ (line 187):
+		//   ```cpp
+		//   output_level_ = (start_level_ == 0) ? vstorage_->base_level() : start_level_ + 1;
+		//   ```
+		//
+		// In static mode: base_level = 1, so L0→L1
+		// In dynamic mode: base_level can be L1, L2, L3, etc. (depending on data distribution)
+		// L0 compacts directly to base_level, skipping empty intermediate levels
+		baseLevel := 1 // Default for static mode
+		if config.LevelCompactionDynamicLevelBytes {
+			baseLevel = lsm.calculateDynamicBaseLevel(config)
+		}
+
+		// Always prefer L0→base_level compaction (normal case)
 		// Intra-L0 is a FALLBACK for extreme cases only
-		targetLevel := lsm.Levels[1]
+		targetLevel := lsm.Levels[baseLevel]
 
 		// RocksDB Reference: PickIntraL0Compaction()
 		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_level.cc#L901-L915
@@ -369,7 +416,7 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 
 		return &CompactionJob{
 			FromLevel:   0,
-			ToLevel:     1,
+			ToLevel:     baseLevel,         // L0→base_level (dynamic mode) or L0→L1 (static mode)
 			SourceFiles: sourceLevel.Files, // All L0 files
 			TargetFiles: targetFiles,
 			IsIntraL0:   false,
@@ -584,9 +631,11 @@ func (c *LeveledCompactor) executeCompactionSingle(job *CompactionJob, lsm *LSMT
 	// Calculate output size based on reduction factor
 	// Models RocksDB's merge operator, deduplication, and compression
 	var reductionFactor float64
-	if job.FromLevel == 0 && job.ToLevel == 1 {
-		// L0→L1: significant deduplication (10% reduction)
+	if job.FromLevel == 0 {
+		// L0→base_level: significant deduplication (10% reduction)
 		// Multiple versions of same key across L0 files get merged
+		// FIDELITY: ⚠️ SIMPLIFIED - Uses same reduction factor for L0→any level
+		// In practice, L0→L1 has more dedup than L0→L5, but we approximate with single factor
 		reductionFactor = 0.9
 	} else {
 		// Deeper levels: minimal deduplication (1% reduction)

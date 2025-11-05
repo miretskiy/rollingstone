@@ -352,7 +352,203 @@ func TestLeveledCompactorExecuteCompaction(t *testing.T) {
 	})
 }
 
-// TestMaxCompactionBytesDefault verifies that max_compaction_bytes defaults to 25x target_file_size_base
+// TestDynamicLevelBytes_BaseLevelCalculation tests that base_level is calculated correctly
+// in dynamic mode based on actual data distribution
+func TestDynamicLevelBytes_BaseLevelCalculation(t *testing.T) {
+	config := DefaultConfig()
+	config.LevelCompactionDynamicLevelBytes = true
+	config.CompactionStyle = CompactionStyleLeveled
+	config.NumLevels = 7
+
+	t.Run("empty LSM has base_level = deepest", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		baseLevel := lsm.calculateBaseLevel()
+		require.Equal(t, 6, baseLevel, "Empty LSM should have base_level = deepest level")
+	})
+
+	t.Run("L1 has files, base_level = 1", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		lsm.Levels[1].AddSize(100.0, 0.0)
+		baseLevel := lsm.calculateBaseLevel()
+		require.Equal(t, 1, baseLevel, "L1 has files, base_level should be 1")
+	})
+
+	t.Run("L2 has files but L1 empty, base_level = 2", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		lsm.Levels[2].AddSize(100.0, 0.0)
+		baseLevel := lsm.calculateBaseLevel()
+		require.Equal(t, 2, baseLevel, "L2 has files but L1 empty, base_level should be 2")
+	})
+
+	t.Run("L5 has files but L1-L4 empty, base_level = 5", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		lsm.Levels[5].AddSize(1000.0, 0.0)
+		baseLevel := lsm.calculateBaseLevel()
+		require.Equal(t, 5, baseLevel, "L5 has files but L1-L4 empty, base_level should be 5")
+	})
+}
+
+// TestDynamicLevelBytes_LevelTargets tests that level targets are calculated correctly
+// in dynamic mode, matching RocksDB's CalculateBaseBytes() algorithm
+func TestDynamicLevelBytes_LevelTargets(t *testing.T) {
+	config := DefaultConfig()
+	config.LevelCompactionDynamicLevelBytes = true
+	config.CompactionStyle = CompactionStyleLeveled
+	config.NumLevels = 7
+	config.MaxBytesForLevelBaseMB = 256
+	config.LevelMultiplier = 10
+
+	t.Run("empty LSM - all targets should be 0 except L0", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		targets := lsm.calculateLevelTargets(config)
+
+		require.Equal(t, float64(config.MaxBytesForLevelBaseMB), targets[0], "L0 should use base size")
+		for i := 1; i < len(targets); i++ {
+			require.Equal(t, 0.0, targets[i], "Level %d should have target=0 when empty", i)
+		}
+	})
+
+	t.Run("L1 has files - base_level=1, targets set for L1+", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		lsm.Levels[1].AddSize(256.0, 0.0) // Exactly base size
+		targets := lsm.calculateLevelTargets(config)
+
+		require.Greater(t, targets[1], 0.0, "L1 should have target > 0")
+		require.GreaterOrEqual(t, targets[1], float64(config.MaxBytesForLevelBaseMB),
+			"L1 target should be >= base_bytes_max (prevent hourglass)")
+		require.Greater(t, targets[2], targets[1], "L2 should be larger than L1")
+		require.Greater(t, targets[3], targets[2], "L3 should be larger than L2")
+	})
+
+	t.Run("L5 has files but L1-L4 empty - base_level moves up for large size", func(t *testing.T) {
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		lsm.Levels[5].AddSize(100000.0, 0.0) // Large enough to trigger base level movement to L3
+		targets := lsm.calculateLevelTargets(config)
+
+		// With 100000 MB in L5 (maxLevelSize), algorithm:
+		//   Loop calculates: curLevelSize for firstNonEmptyLevel (L5)
+		//   For L5=100000, firstNonEmptyLevel=5, loop runs once: i=5, curLevelSize = 100000 / 10 = 10000
+		//   Check: 10000 <= baseBytesMin (25.6)? NO, so Case 2
+		//   Case 2: 10000 > baseBytesMax (256)? YES, so move baseLevel up
+		//   baseLevel=4, curLevelSize=1000, 1000 > 256? YES, continue
+		//   baseLevel=3, curLevelSize=100, 100 > 256? NO, stop at baseLevel=3
+		baseLevel := lsm.calculateDynamicBaseLevel(config)
+		require.Equal(t, 3, baseLevel, "L5 with 100000 MB should move base level to L3")
+
+		// Levels below base_level should have target=0
+		for i := 1; i < baseLevel; i++ {
+			require.Equal(t, 0.0, targets[i], "Level %d below base_level (%d) should have target=0", i, baseLevel)
+		}
+
+		// Base_level and above should have targets
+		require.Greater(t, targets[baseLevel], 0.0, "L%d (base_level) should have target > 0", baseLevel)
+		if baseLevel < len(targets)-1 {
+			require.Greater(t, targets[baseLevel+1], targets[baseLevel], "L%d should be larger than L%d", baseLevel+1, baseLevel)
+		}
+	})
+}
+
+// TestDynamicLevelBytes_L0CompactionTarget tests that L0 compacts to base_level
+// in dynamic mode, not always L1
+func TestDynamicLevelBytes_L0CompactionTarget(t *testing.T) {
+	config := DefaultConfig()
+	config.LevelCompactionDynamicLevelBytes = true
+	config.CompactionStyle = CompactionStyleLeveled
+	config.NumLevels = 7
+	config.L0CompactionTrigger = 4
+
+	t.Run("L1 has files - L0 compacts to L1", func(t *testing.T) {
+		compactor := NewLeveledCompactor(0)
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		// Add L0 files - need enough to exceed threshold but NOT trigger intra-L0
+		// Intra-L0 threshold = trigger + 2 = 6, so use exactly 5 files
+		// When L1 has < 3 files, threshold = 1.5, so need fileCount / trigger > 1.5
+		// With trigger=4, need fileCount > 6, but that triggers intra-L0
+		// So use 5 files: score = 5/4 = 1.25, but threshold for L1 with 1 file = 1.5
+		// Actually need 6 files: score = 6/4 = 1.5, but threshold = 1.5, so need > 1.5
+		// Use 7 files: score = 7/4 = 1.75 > 1.5, and 7 < 6? No, 7 >= 6, so intra-L0 triggers
+		// So we need L1 to have >= 3 files so threshold = 1.0
+		for i := 0; i < 5; i++ {
+			lsm.Levels[0].AddSize(64.0, float64(i))
+		}
+		// Add L1 files - >= 3 files so threshold = 1.0 (not 1.5)
+		lsm.Levels[1].AddSize(50.0, 0.0)
+		lsm.Levels[1].AddSize(50.0, 0.0)
+		lsm.Levels[1].AddSize(50.0, 0.0) // 3 files total
+
+		job := compactor.PickCompaction(lsm, config)
+		require.NotNil(t, job, "Should pick compaction - L0 has 5 files, score=1.25 > 1.0 threshold")
+		if job != nil {
+			require.Equal(t, 0, job.FromLevel, "Should compact from L0")
+			require.Equal(t, 1, job.ToLevel, "Should compact to L1 (base_level)")
+		}
+	})
+
+	t.Run("L5 has files but L1-L4 empty - L0 compacts to L5", func(t *testing.T) {
+		compactor := NewLeveledCompactor(0)
+		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+		// Add L0 files - need enough to exceed threshold but NOT trigger intra-L0
+		// Intra-L0 threshold = trigger + 2 = 6, so use 5 files max
+		// L5 has >= 3 files, so threshold = 1.0
+		// L0 score = 5/4 = 1.25 > 1.0 threshold
+		for i := 0; i < 5; i++ {
+			lsm.Levels[0].AddSize(64.0, float64(i))
+		}
+		// Add L5 files (L1-L4 empty) - >= 3 files so threshold = 1.0
+		// Keep L5 very small so it has very low score (< 1.25) and L0 is picked
+		// Use tiny files to ensure L5 is well under target
+		lsm.Levels[5].AddSize(1.0, 0.0)
+		lsm.Levels[5].AddSize(1.0, 0.0)
+		lsm.Levels[5].AddSize(1.0, 0.0) // 3 files, total 3MB
+
+		// Verify base_level is L5
+		baseLevel := lsm.calculateBaseLevel()
+		require.Equal(t, 5, baseLevel, "Base level should be L5")
+
+		// Verify L5 is under target so it has low score
+		targets := lsm.calculateLevelTargets(config)
+		require.Greater(t, targets[5], lsm.Levels[5].TotalSize, "L5 should be under target to have low score")
+
+		job := compactor.PickCompaction(lsm, config)
+		require.NotNil(t, job, "Should pick compaction - L0 has 5 files (score=1.25), L5 has 3 files under target")
+		if job != nil {
+			require.Equal(t, 0, job.FromLevel, "Should compact from L0")
+			require.Equal(t, 5, job.ToLevel, "Should compact to L5 (base_level)")
+		}
+	})
+}
+
+// TestDynamicLevelBytes_LevelScoring tests that levels below base_level
+// are not scored in dynamic mode
+func TestDynamicLevelBytes_LevelScoring(t *testing.T) {
+	config := DefaultConfig()
+	config.LevelCompactionDynamicLevelBytes = true
+	config.CompactionStyle = CompactionStyleLeveled
+	config.NumLevels = 7
+
+	lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
+	// Add files to L5 (L1-L4 empty)
+	lsm.Levels[5].AddSize(10000.0, 0.0)
+
+	// Score levels below base_level (should be 0)
+	scoreL1 := lsm.calculateCompactionScore(1, config, 0.0)
+	scoreL2 := lsm.calculateCompactionScore(2, config, 0.0)
+	scoreL3 := lsm.calculateCompactionScore(3, config, 0.0)
+	scoreL4 := lsm.calculateCompactionScore(4, config, 0.0)
+
+	require.Equal(t, 0.0, scoreL1, "L1 below base_level should have score=0")
+	require.Equal(t, 0.0, scoreL2, "L2 below base_level should have score=0")
+	require.Equal(t, 0.0, scoreL3, "L3 below base_level should have score=0")
+	require.Equal(t, 0.0, scoreL4, "L4 below base_level should have score=0")
+
+	// Score base_level and above (should be valid)
+	scoreL5 := lsm.calculateCompactionScore(5, config, 0.0)
+	scoreL6 := lsm.calculateCompactionScore(6, config, 0.0)
+
+	require.GreaterOrEqual(t, scoreL5, 0.0, "L5 (base_level) should have valid score")
+	require.GreaterOrEqual(t, scoreL6, 0.0, "L6 should have valid score")
+}
+
 // when set to 0, matching RocksDB behavior (db/column_family.cc)
 func TestMaxCompactionBytesDefault(t *testing.T) {
 	config := SimConfig{
@@ -3145,9 +3341,18 @@ func TestPickCompaction_LeveledCompaction_FastChecks(t *testing.T) {
 	t.Run("L0NeedsCompaction", func(t *testing.T) {
 		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 		// Add files to L0 to trigger compaction
+		// L0 score = fileCount / trigger = 5/4 = 1.25
+		// If L1 is empty, threshold = 2.0, so need fileCount / trigger > 2.0
+		// With trigger=4, need fileCount > 8
+		// But if L1 has >= 3 files, threshold = 1.0, so 5 files is enough
+		// So add files to L1 to ensure threshold = 1.0
 		for i := 0; i < 5; i++ {
 			lsm.CreateSSTFile(0, 64.0, 0.0)
 		}
+		// Add L1 files so threshold = 1.0 (not 2.0)
+		lsm.Levels[1].AddSize(50.0, 0.0)
+		lsm.Levels[1].AddSize(50.0, 0.0)
+		lsm.Levels[1].AddSize(50.0, 0.0) // 3 files
 
 		job := compactor.PickCompaction(lsm, config)
 		require.NotNil(t, job, "Should schedule when L0 needs compaction")

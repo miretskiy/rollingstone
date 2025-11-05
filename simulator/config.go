@@ -68,7 +68,7 @@ type SimConfig struct {
 
 	// Compaction Triggers
 	L0CompactionTrigger    int `json:"l0CompactionTrigger"`    // level0_file_num_compaction_trigger (default 4)
-	MaxBytesForLevelBaseMB int `json:"maxBytesForLevelBaseMB"` // L1 target size (default 256MB)
+	MaxBytesForLevelBaseMB int `json:"maxBytesForLevelBaseMB"` // Base level target size (default 256MB). In static mode, this is L1. In dynamic mode, this is the base_level (first non-empty level).
 	LevelMultiplier        int `json:"levelMultiplier"`        // max_bytes_for_level_multiplier (default 10)
 
 	// SST Files
@@ -83,7 +83,7 @@ type SimConfig struct {
 	IOLatencyMs                      float64         `json:"ioLatencyMs"`                      // Disk IO latency in milliseconds (seek time)
 	IOThroughputMBps                 float64         `json:"ioThroughputMBps"`                 // Sequential I/O throughput in MB/s (for compaction duration)
 	NumLevels                        int             `json:"numLevels"`                        // LSM tree depth (default 7)
-	LevelCompactionDynamicLevelBytes bool            `json:"levelCompactionDynamicLevelBytes"` // level_compaction_dynamic_level_bytes (default false for intuition, true in RocksDB 8.6+)
+	LevelCompactionDynamicLevelBytes bool            `json:"levelCompactionDynamicLevelBytes"` // level_compaction_dynamic_level_bytes (default true) - ONLY applies to leveled compaction, ignored for universal compaction. When true, dynamically adjusts level sizes based on actual data distribution.
 	CompactionStyle                  CompactionStyle `json:"compactionStyle"`                  // compaction_style: "leveled" or "universal" (default "universal")
 
 	// Universal Compaction Options
@@ -114,7 +114,7 @@ func DefaultConfig() SimConfig {
 		IOLatencyMs:                      1.0,                      // 1ms latency (EBS gp3 baseline)
 		IOThroughputMBps:                 125.0,                    // 125 MB/s throughput (EBS gp3 baseline)
 		NumLevels:                        7,                        // 7 levels (RocksDB default)
-		LevelCompactionDynamicLevelBytes: false,                    // false for more intuitive level sizing
+		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
 		CompactionStyle:                  CompactionStyleUniversal, // Universal compaction (default as per user request)
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
@@ -142,7 +142,7 @@ func ThreeLevelConfig() SimConfig {
 		IOLatencyMs:                      5.0,                      // 5ms seek time
 		IOThroughputMBps:                 500.0,                    // 500 MB/s throughput
 		NumLevels:                        3,                        // Only 3 levels: Memtable, L0, L1
-		LevelCompactionDynamicLevelBytes: false,                    // false for more intuitive level sizing
+		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
 		CompactionStyle:                  CompactionStyleUniversal, // Default to universal
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
@@ -181,6 +181,7 @@ func (c *SimConfig) Validate() error {
 	if c.NumLevels < 2 || c.NumLevels > 10 {
 		return ErrInvalidConfig("numLevels must be between 2 and 10")
 	}
+
 	// RocksDB allows max_size_amplification_percent to be any unsigned int (0 to UINT_MAX)
 	// No validation constraints in RocksDB - allows any value including:
 	// - 0: triggers compaction on any positive amplification (aggressive compaction)

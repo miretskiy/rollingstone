@@ -6,7 +6,7 @@ interface LevelProps {
     level: LevelState;
     compactionInfos: ActiveCompactionInfo[];
     compactionsSinceUpdate?: CompactionStats;
-    baseLevel?: number; // Base level for universal compaction (only set when compaction style is universal)
+    baseLevel?: number; // Base level for universal compaction and leveled compaction with dynamic level bytes (lowest non-empty level below L0)
 }
 
 function Level({ level, compactionInfos, compactionsSinceUpdate, baseLevel }: LevelProps) {
@@ -59,7 +59,7 @@ function Level({ level, compactionInfos, compactionsSinceUpdate, baseLevel }: Le
                                 {level.level === 0 ? 'L0 (Tiered)' : `L${level.level} (Leveled)`}
                             </span>
                             {baseLevel !== undefined && level.level === baseLevel && (
-                                <span className="text-xs px-2 py-0.5 bg-purple-600/30 text-purple-300 border border-purple-500 rounded font-semibold" title="Base level: lowest non-empty level below L0. Files below base level are never compacted in universal compaction.">
+                                <span className="text-xs px-2 py-0.5 bg-purple-600/30 text-purple-300 border border-purple-500 rounded font-semibold" title="Base level: lowest non-empty level below L0. In universal compaction, files below base level are never compacted. In leveled compaction with dynamic level bytes, L0 compacts directly to base level, skipping empty intermediate levels.">
                                     BASE
                                 </span>
                             )}

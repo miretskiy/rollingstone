@@ -80,37 +80,17 @@ func NewUniversalCompactor(seed int64) *UniversalCompactor {
 // RocksDB Reference: UniversalCompactionStyle::CalculateBaseLevel()
 // GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_universal.cc
 //
-// RocksDB C++ logic (simplified, from CalculateSortedRuns helper):
-//
-//	int base_level = num_levels - 1;
-//	for (level = 1; level < num_levels; level++) {
-//	  if (vstorage_->NumLevelFiles(level) > 0) {
-//	    base_level = level;
-//	    break;
-//	  }
-//	}
-//
 // Base level determination:
 // - Starts at deepest level (num_levels - 1)
 // - Searches from level 1 upwards for first non-empty level
 // - Base level is the lowest (shallowest) non-empty level below L0
 // - Files below base level are never compacted in universal compaction
 //
-// FIDELITY: ✓ Matches RocksDB's base level determination exactly
-// - Initializes to deepest level
-// - Searches from level 1 (skips L0) for first non-empty
-// - Returns deepest level if all levels below L0 are empty
+// FIDELITY: ✓ Unified implementation - uses LSMTree.calculateBaseLevel()
+// This matches the same logic used for leveled compaction with dynamic level bytes
+// The base level calculation is identical for both compaction styles
 func (c *UniversalCompactor) findBaseLevel(lsm *LSMTree) int {
-	// RocksDB logic: base_level starts as num_levels - 1, then finds first non-empty level
-	// Start from level 1 (skip L0) and find the FIRST non-empty level
-	baseLevel := len(lsm.Levels) - 1 // Default to deepest
-	for i := 1; i < len(lsm.Levels); i++ {
-		if lsm.Levels[i].FileCount > 0 || lsm.Levels[i].TotalSize > 0 {
-			baseLevel = i
-			break // Found first non-empty, stop
-		}
-	}
-	return baseLevel
+	return lsm.calculateBaseLevel()
 }
 
 // calculateSortedRuns builds sorted runs from the LSM tree
@@ -281,9 +261,12 @@ func (c *UniversalCompactor) checkSizeAmplification(lsm *LSMTree, baseLevel int,
 	amplificationPercent := (sizeAboveBase / sizeAtBase) * 100.0
 
 	// Use configurable threshold (default 200%)
-	// RocksDB behavior: value of 0 means compaction triggers on any amplification (>0)
+	// RocksDB behavior: value of 0 is treated as invalid and uses 200% default
 	// Very high values (e.g., 9000) allow extreme amplification before triggering
 	maxSizeAmpPercent := float64(config.MaxSizeAmplificationPercent)
+	if maxSizeAmpPercent == 0 {
+		maxSizeAmpPercent = 200.0 // Default threshold
+	}
 
 	return amplificationPercent > maxSizeAmpPercent
 }

@@ -59,6 +59,17 @@ type SortedRun struct {
 
 // NewUniversalCompactor creates a universal compactor with default distributions
 func NewUniversalCompactor(seed int64) *UniversalCompactor {
+	// Use default overlap distribution (Geometric)
+	defaultOverlap := OverlapDistributionConfig{
+		Type:              DistGeometric,
+		GeometricP:        0.3,
+		ExponentialLambda: 0.5,
+	}
+	return NewUniversalCompactorWithOverlapDist(seed, defaultOverlap)
+}
+
+// NewUniversalCompactorWithOverlapDist creates a universal compactor with specified overlap distribution
+func NewUniversalCompactorWithOverlapDist(seed int64, overlapConfig OverlapDistributionConfig) *UniversalCompactor {
 	var rng *rand.Rand
 	if seed == 0 {
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -66,9 +77,20 @@ func NewUniversalCompactor(seed int64) *UniversalCompactor {
 		rng = rand.New(rand.NewSource(seed))
 	}
 
+	// Create overlap distribution based on config
+	var overlapDist Distribution
+	switch overlapConfig.Type {
+	case DistExponential:
+		overlapDist = &ExponentialDistribution{Lambda: overlapConfig.ExponentialLambda}
+	case DistGeometric:
+		overlapDist = &GeometricDistribution{P: overlapConfig.GeometricP}
+	default: // DistUniform
+		overlapDist = &UniformDistribution{}
+	}
+
 	return &UniversalCompactor{
 		fileSelectDist:      newDistributionAdapter(DistGeometric), // Favor picking fewer files
-		overlapSelectDist:   newDistributionAdapter(DistGeometric), // Geometric better than Exponential for overlaps
+		overlapSelectDist:   &distributionAdapter{dist: overlapDist, rng: rng},
 		sortedRunSelectDist: newDistributionAdapter(DistGeometric), // Favor picking fewer sorted runs
 		rng:                 rng,
 		activeCompactions:   make(map[int]bool),

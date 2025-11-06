@@ -15,6 +15,86 @@ const (
 	CompactionStyleUniversal                        // Universal compaction (space-efficient, lower write amp)
 )
 
+// TrafficModel represents the traffic distribution model
+type TrafficModel int
+
+const (
+	TrafficModelConstant TrafficModel = iota // Constant rate model
+	TrafficModelAdvancedONOFF                // Advanced ON/OFF lognormal model with spikes
+)
+
+// String returns the string representation of TrafficModel
+func (tm TrafficModel) String() string {
+	switch tm {
+	case TrafficModelConstant:
+		return "constant"
+	case TrafficModelAdvancedONOFF:
+		return "advanced"
+	default:
+		return "constant"
+	}
+}
+
+// ParseTrafficModel parses a string into TrafficModel
+func ParseTrafficModel(s string) (TrafficModel, error) {
+	switch s {
+	case "constant":
+		return TrafficModelConstant, nil
+	case "advanced":
+		return TrafficModelAdvancedONOFF, nil
+	default:
+		return TrafficModelConstant, fmt.Errorf("invalid traffic model: %s (must be 'constant' or 'advanced')", s)
+	}
+}
+
+// MarshalJSON implements json.Marshaler for TrafficModel
+func (tm TrafficModel) MarshalJSON() ([]byte, error) {
+	return json.Marshal(tm.String())
+}
+
+// UnmarshalJSON implements json.Unmarshaler for TrafficModel
+func (tm *TrafficModel) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseTrafficModel(s)
+	if err != nil {
+		return err
+	}
+	*tm = parsed
+	return nil
+}
+
+// TrafficDistributionConfig holds traffic distribution parameters
+type TrafficDistributionConfig struct {
+	Model TrafficModel `json:"model"` // Traffic model type
+
+	// Constant model parameters
+	WriteRateMBps float64 `json:"writeRateMBps"` // For constant model: write rate in MB/s
+
+	// Advanced ON/OFF model parameters
+	BaseRateMBps        float64 `json:"baseRateMBps"`        // B: baseline rate in MB/s
+	BurstMultiplier     float64 `json:"burstMultiplier"`     // M: multiplier for burst regime
+	LognormalSigma      float64 `json:"lognormalSigma"`      // σ: lognormal variance parameter
+	OnMeanSeconds       float64 `json:"onMeanSeconds"`       // Mean ON duration
+	OffMeanSeconds      float64 `json:"offMeanSeconds"`      // Mean OFF duration
+	ErlangK             int     `json:"erlangK"`             // Erlang shape parameter for ON periods
+	SpikeRatePerSec     float64 `json:"spikeRatePerSec"`     // Poisson rate for spike arrival
+	SpikeMeanDur        float64 `json:"spikeMeanDur"`        // Mean spike duration
+	SpikeAmplitudeMean  float64 `json:"spikeAmplitudeMean"`  // Mean spike amplitude (log space)
+	SpikeAmplitudeSigma float64 `json:"spikeAmplitudeSigma"` // Spike amplitude variance (log space)
+	CapacityLimitMB     float64 `json:"capacityLimitMB"`     // Capacity limit (0 = unlimited)
+	QueueMode           string  `json:"queueMode"`          // "drop" or "queue"
+}
+
+// OverlapDistributionConfig holds overlap distribution parameters
+type OverlapDistributionConfig struct {
+	Type            DistributionType `json:"type"`            // Distribution type: Uniform, Exponential, Geometric
+	GeometricP      float64          `json:"geometricP"`      // For Geometric: success probability (default 0.3)
+	ExponentialLambda float64        `json:"exponentialLambda"` // For Exponential: rate parameter (default 0.5)
+}
+
 // String returns the string representation of CompactionStyle
 func (cs CompactionStyle) String() string {
 	switch cs {
@@ -94,12 +174,18 @@ type SimConfig struct {
 	SimulationSpeedMultiplier int   `json:"simulationSpeedMultiplier"` // Process N events per step (1 = real-time feel, 10 = 10x faster)
 	RandomSeed                int64 `json:"randomSeed"`                // Random seed for reproducibility (0 = use time-based seed)
 	MaxStalledWriteMemoryMB   int   `json:"maxStalledWriteMemoryMB"`   // OOM threshold: stop simulation if stalled write backlog exceeds this (default 4096 MB = 4GB)
+
+	// Traffic Distribution
+	TrafficDistribution TrafficDistributionConfig `json:"trafficDistribution"` // Traffic distribution configuration
+
+	// Overlap Distribution
+	OverlapDistribution OverlapDistributionConfig `json:"overlapDistribution"` // Overlap distribution configuration
 }
 
 // DefaultConfig returns sensible defaults based on RocksDB documentation
 func DefaultConfig() SimConfig {
 	return SimConfig{
-		WriteRateMBps:                    10.0,                     // 10 MB/s write rate
+		WriteRateMBps:                    10.0,                     // 10 MB/s write rate (deprecated, use TrafficDistribution)
 		MemtableFlushSizeMB:              64,                       // 64MB memtable (RocksDB default)
 		MaxWriteBufferNumber:             2,                        // 2 memtables max (RocksDB default)
 		L0CompactionTrigger:              4,                        // 4 L0 files trigger compaction (RocksDB default)
@@ -121,6 +207,15 @@ func DefaultConfig() SimConfig {
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step (real-time feel)
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
+		TrafficDistribution: TrafficDistributionConfig{
+			Model:       TrafficModelConstant,
+			WriteRateMBps: 10.0,
+		},
+		OverlapDistribution: OverlapDistributionConfig{
+			Type:             DistGeometric,
+			GeometricP:       0.3,
+			ExponentialLambda: 0.5,
+		},
 	}
 }
 
@@ -128,7 +223,7 @@ func DefaultConfig() SimConfig {
 // Useful for understanding basic LSM behavior: Memtable → L0 → L1
 func ThreeLevelConfig() SimConfig {
 	return SimConfig{
-		WriteRateMBps:                    10.0,                     // 10 MB/s write rate
+		WriteRateMBps:                    10.0,                     // 10 MB/s write rate (deprecated, use TrafficDistribution)
 		MemtableFlushSizeMB:              64,                       // 64MB memtable
 		MaxWriteBufferNumber:             2,                        // 2 memtables max
 		L0CompactionTrigger:              4,                        // 4 L0 files trigger compaction
@@ -143,12 +238,21 @@ func ThreeLevelConfig() SimConfig {
 		IOThroughputMBps:                 500.0,                    // 500 MB/s throughput
 		NumLevels:                        3,                        // Only 3 levels: Memtable, L0, L1
 		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
-		CompactionStyle:                  CompactionStyleUniversal, // Default to universal
+		CompactionStyle:                      CompactionStyleUniversal, // Default to universal
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
+		TrafficDistribution: TrafficDistributionConfig{
+			Model:       TrafficModelConstant,
+			WriteRateMBps: 10.0,
+		},
+		OverlapDistribution: OverlapDistributionConfig{
+			Type:             DistGeometric,
+			GeometricP:       0.3,
+			ExponentialLambda: 0.5,
+		},
 	}
 }
 

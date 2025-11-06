@@ -22,6 +22,7 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+
 // Client message types
 type ClientMessage struct {
 	Type   string               `json:"type"`
@@ -335,6 +336,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Println("Client connected")
 
 	// Create simulator state with default config
+	// Config will be loaded from client's localStorage and sent via WebSocket
 	config := simulator.DefaultConfig()
 	state, err := newSimState(config)
 	if err != nil {
@@ -424,10 +426,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				} else {
 					log.Printf("Config updated: %+v", msg.Config)
 					running := state.isRunning()
+					updatedFullConfig := state.getConfig()
 					statusMsg := ServerMessage{
 						Type:    "status",
 						Running: &running,
-						Config:  msg.Config,
+						Config:  &updatedFullConfig,
 					}
 					safeConn.WriteJSON(statusMsg)
 				}

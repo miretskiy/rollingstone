@@ -8,6 +8,29 @@ import type {
     ConnectionStatus,
 } from './types';
 
+const CONFIG_STORAGE_KEY = 'rollingstone-config';
+
+// Load configuration from localStorage
+function loadConfigFromStorage(): Partial<SimulationConfig> | null {
+    try {
+        const stored = localStorage.getItem(CONFIG_STORAGE_KEY);
+        if (!stored) return null;
+        return JSON.parse(stored);
+    } catch (error) {
+        console.warn('Failed to load config from localStorage:', error);
+        return null;
+    }
+}
+
+// Save configuration to localStorage
+function saveConfigToStorage(config: SimulationConfig): void {
+    try {
+        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch (error) {
+        console.warn('Failed to save config to localStorage:', error);
+    }
+}
+
 // ==== STORE ====
 
 interface AppStore {
@@ -39,36 +62,76 @@ interface AppStore {
     setConnectionStatus: (status: ConnectionStatus) => void;
 }
 
+// Default configuration
+const defaultConfig: SimulationConfig = {
+    writeRateMBps: 10,
+    memtableFlushSizeMB: 64,
+    maxWriteBufferNumber: 2,
+    memtableFlushTimeoutSec: 300,
+    l0CompactionTrigger: 4,
+    maxBytesForLevelBaseMB: 256,
+    levelMultiplier: 10,
+    targetFileSizeMB: 64,
+    targetFileSizeMultiplier: 2,
+    compactionReductionFactor: 0.9,
+    maxBackgroundJobs: 2,
+    maxSubcompactions: 1,
+    maxCompactionBytesMB: 1600,
+    ioLatencyMs: 1,
+    ioThroughputMBps: 125,
+    numLevels: 7,
+    initialLSMSizeMB: 0,
+    simulationSpeedMultiplier: 1,
+    randomSeed: 0,
+    maxStalledWriteMemoryMB: 4096, // 4GB default OOM threshold
+    compactionStyle: 'universal', // Default to universal compaction
+    maxSizeAmplificationPercent: 200, // Default RocksDB value
+    levelCompactionDynamicLevelBytes: false, // Default false when compactionStyle is universal
+    trafficDistribution: {
+        model: 'constant',
+        writeRateMBps: 10.0,
+    },
+    overlapDistribution: {
+        type: 'geometric',
+        geometricP: 0.3,
+        exponentialLambda: 0.5,
+    },
+};
+
+// Load initial config from localStorage, merging with defaults
+function getInitialConfig(): SimulationConfig {
+    const stored = loadConfigFromStorage();
+    if (!stored) return defaultConfig;
+    
+    // Deep merge stored config with defaults to handle new fields
+    const mergedConfig: SimulationConfig = {
+        ...defaultConfig,
+        ...stored,
+        trafficDistribution: stored.trafficDistribution 
+            ? {
+                ...defaultConfig.trafficDistribution!,
+                ...stored.trafficDistribution,
+                model: stored.trafficDistribution.model || defaultConfig.trafficDistribution!.model,
+            }
+            : defaultConfig.trafficDistribution!,
+        overlapDistribution: stored.overlapDistribution
+            ? {
+                ...defaultConfig.overlapDistribution!,
+                ...stored.overlapDistribution,
+                type: stored.overlapDistribution.type || defaultConfig.overlapDistribution!.type,
+            }
+            : defaultConfig.overlapDistribution!,
+    };
+    
+    return mergedConfig;
+}
+
 export const useStore = create<AppStore>((set, get) => ({
     // Initial state
     connectionStatus: 'disconnected',
     ws: null,
     isRunning: false,
-    config: {
-        writeRateMBps: 10,
-        memtableFlushSizeMB: 64,
-        maxWriteBufferNumber: 2,
-        memtableFlushTimeoutSec: 300,
-        l0CompactionTrigger: 4,
-        maxBytesForLevelBaseMB: 256,
-        levelMultiplier: 10,
-        targetFileSizeMB: 64,
-        targetFileSizeMultiplier: 2,
-        compactionReductionFactor: 0.9,
-        maxBackgroundJobs: 2,
-        maxSubcompactions: 1,
-        maxCompactionBytesMB: 1600,
-        ioLatencyMs: 1,
-        ioThroughputMBps: 125,
-        numLevels: 7,
-        initialLSMSizeMB: 0,
-        simulationSpeedMultiplier: 1,
-        randomSeed: 0,
-        maxStalledWriteMemoryMB: 4096, // 4GB default OOM threshold
-        compactionStyle: 'universal', // Default to universal compaction
-        maxSizeAmplificationPercent: 200, // Default RocksDB value
-        levelCompactionDynamicLevelBytes: false, // Default false when compactionStyle is universal
-      },
+    config: getInitialConfig(),
     currentMetrics: null,
     metricsHistory: [],
     currentState: null,
@@ -161,7 +224,25 @@ export const useStore = create<AppStore>((set, get) => ({
 
     updateConfig: (configUpdate: Partial<SimulationConfig>) => {
         const currentConfig = get().config;
-        const newConfig = { ...currentConfig, ...configUpdate };
+        const newConfig = { ...currentConfig };
+        
+        // Deep merge nested configs
+        if (configUpdate.trafficDistribution) {
+            newConfig.trafficDistribution = {
+                ...(currentConfig.trafficDistribution || { model: 'constant', writeRateMBps: currentConfig.writeRateMBps }),
+                ...configUpdate.trafficDistribution,
+            };
+        }
+        
+        if (configUpdate.overlapDistribution) {
+            newConfig.overlapDistribution = {
+                ...(currentConfig.overlapDistribution || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 }),
+                ...configUpdate.overlapDistribution,
+            };
+        }
+        
+        // Merge top-level config
+        Object.assign(newConfig, configUpdate);
         
         // Automatically disable levelCompactionDynamicLevelBytes when compaction style is universal
         if (newConfig.compactionStyle === 'universal') {
@@ -174,6 +255,9 @@ export const useStore = create<AppStore>((set, get) => ({
                 newConfig.levelCompactionDynamicLevelBytes = true;
             }
         }
+        
+        // Save to localStorage
+        saveConfigToStorage(newConfig);
         
         // Send the FULL config to backend (it expects complete SimConfig)
         get().sendMessage({ type: 'config_update', config: newConfig });
@@ -190,9 +274,22 @@ export const useStore = create<AppStore>((set, get) => ({
             switch (message.type) {
                 case 'status':
                     // console.log('Status update:', message);
+                    // Ensure overlapDistribution has defaults if missing
+                    const statusConfig = message.config;
+                    if (statusConfig && !statusConfig.overlapDistribution) {
+                        statusConfig.overlapDistribution = {
+                            type: 'geometric',
+                            geometricP: 0.3,
+                            exponentialLambda: 0.5,
+                        };
+                    }
+                    if (statusConfig) {
+                        // Save config from server to localStorage (in case server was restarted)
+                        saveConfigToStorage(statusConfig);
+                    }
                     set({
                         isRunning: message.running,
-                        config: message.config,
+                        config: statusConfig,
                     });
                     break;
 

@@ -33,6 +33,7 @@ type Simulator struct {
 	stallStartTime          float64                 // When the current stall started (0 if not stalled)
 	stalledWriteBacklog     int                     // Number of writes waiting during stall (for OOM detection)
 	nextFlushCompletionTime float64                 // When the next flush that will clear the stall completes (0 if none scheduled)
+	trafficDistribution     TrafficDistribution     // Traffic distribution generator
 
 	// Event logging callback (optional, for UI/debugging)
 	LogEvent func(msg string)
@@ -44,19 +45,27 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		return nil, err
 	}
 
+	// Sync top-level WriteRateMBps to TrafficDistribution.WriteRateMBps for constant model
+	if config.TrafficDistribution.Model == TrafficModelConstant {
+		config.TrafficDistribution.WriteRateMBps = config.WriteRateMBps
+	}
+
 	lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 
 	// Create appropriate compactor based on compaction style
 	var compactor Compactor
 	switch config.CompactionStyle {
 	case CompactionStyleLeveled:
-		compactor = NewLeveledCompactor(config.RandomSeed)
+		compactor = NewLeveledCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
 	case CompactionStyleUniversal:
-		compactor = NewUniversalCompactor(config.RandomSeed)
+		compactor = NewUniversalCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
 	default:
 		// Default to universal compaction
-		compactor = NewUniversalCompactor(config.RandomSeed)
+		compactor = NewUniversalCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
 	}
+
+	// Create traffic distribution
+	trafficDist := NewTrafficDistribution(config.TrafficDistribution, config.RandomSeed)
 
 	sim := &Simulator{
 		config:                  config,
@@ -73,6 +82,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		stallStartTime:          0,
 		stalledWriteBacklog:     0,
 		nextFlushCompletionTime: 0,
+		trafficDistribution:     trafficDist,
 	}
 
 	// Note: Simulator starts in "dormant" state with no events scheduled
@@ -87,17 +97,32 @@ func (s *Simulator) ensureEventsScheduled() {
 	// This is simple, correct, and not performance-critical (called rarely)
 	s.queue.Clear()
 
+	// Recreate traffic distribution (in case config changed)
+	s.trafficDistribution = NewTrafficDistribution(s.config.TrafficDistribution, s.config.RandomSeed)
+
+	// Initialize time tracking for advanced traffic distribution
+	if advDist, ok := s.trafficDistribution.(*AdvancedTrafficDistribution); ok {
+		advDist.UpdateTime(s.virtualTime)
+	}
+
 	// Schedule write scheduler event (if rate > 0)
 	// This continuously schedules writes at the configured rate
-	if s.config.WriteRateMBps > 0 {
+	writeRate := s.config.TrafficDistribution.WriteRateMBps
+	if s.config.TrafficDistribution.Model == TrafficModelConstant && writeRate > 0 {
+		s.scheduleNextScheduleWrite(s.virtualTime)
+	} else if s.config.TrafficDistribution.Model == TrafficModelAdvancedONOFF && s.config.TrafficDistribution.BaseRateMBps > 0 {
 		s.scheduleNextScheduleWrite(s.virtualTime)
 	}
 
 	// Always schedule compaction checks
 	s.scheduleNextCompactionCheck(s.virtualTime)
 
-	fmt.Printf("[INIT] Scheduled initial events at t=%.1f (write_rate=%.1f MB/s)\n",
-		s.virtualTime, s.config.WriteRateMBps)
+	writeRateStr := fmt.Sprintf("%.1f MB/s", writeRate)
+	if s.config.TrafficDistribution.Model == TrafficModelAdvancedONOFF {
+		writeRateStr = fmt.Sprintf("advanced (base=%.1f MB/s)", s.config.TrafficDistribution.BaseRateMBps)
+	}
+	fmt.Printf("[INIT] Scheduled initial events at t=%.1f (write_rate=%s)\n",
+		s.virtualTime, writeRateStr)
 }
 
 // Step advances the simulation by one UI update interval.
@@ -109,12 +134,14 @@ func (s *Simulator) Step() {
 		return
 	}
 
-	// Invariant check: Queue should never be empty after initialization
+	// Invariant check: Queue should never be empty after initialization (unless write rate is 0)
 	// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
-	if s.queue.IsEmpty() {
-		// CRITICAL DEBUG: Log exact state when queue becomes empty
+	// Exception: If write rate is 0, ScheduleWriteEvent may not be scheduled, so queue can be empty
+	effectiveRate := s.getEffectiveWriteRateMBps()
+	if s.queue.IsEmpty() && effectiveRate > 0 {
+		// CRITICAL DEBUG: Log exact state when queue becomes empty (but only if rate > 0)
 		fmt.Printf("[BUG] Queue empty at t=%.3f! WriteRate: %.1f, OOM: %v, numImmutableMemtables: %d, activeCompactions: %d\n",
-			s.virtualTime, s.config.WriteRateMBps, s.metrics.IsOOMKilled, s.numImmutableMemtables, 0)
+			s.virtualTime, effectiveRate, s.metrics.IsOOMKilled, s.numImmutableMemtables, 0)
 		panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
 	}
 
@@ -167,7 +194,8 @@ func (s *Simulator) Step() {
 
 			// Also check duration-based backlog for the current stall (for logging/debugging)
 			stallDuration := s.virtualTime - s.stallStartTime
-			durationBasedBacklogMB := stallDuration * s.config.WriteRateMBps
+			effectiveRate := s.getEffectiveWriteRateMBps()
+			durationBasedBacklogMB := stallDuration * effectiveRate
 
 			// Use the actual queued write count for OOM detection (more accurate)
 			if actualBacklogMB > float64(s.config.MaxStalledWriteMemoryMB) {
@@ -187,16 +215,18 @@ func (s *Simulator) Step() {
 		// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
 		if s.queue.IsEmpty() && !s.metrics.IsOOMKilled {
 			// CRITICAL DEBUG: Log exact state when queue becomes empty
+			effectiveRate := s.getEffectiveWriteRateMBps()
 			fmt.Printf("[BUG] Queue empty at t=%.3f (after iteration %d)! WriteRate: %.1f, OOM: %v, numImmutableMemtables: %d, activeCompactions: %d\n",
-				s.virtualTime, i, s.config.WriteRateMBps, s.metrics.IsOOMKilled, s.numImmutableMemtables, len(s.pendingCompactions))
+				s.virtualTime, i, effectiveRate, s.metrics.IsOOMKilled, s.numImmutableMemtables, len(s.pendingCompactions))
 			panic("BUG: Event queue is empty! Self-perpetuating events (ScheduleWriteEvent, CompactionCheckEvent) should keep it populated.")
 		}
 	}
 
 	// Log queue size periodically (every 100 seconds of virtual time)
 	if int(s.virtualTime)%100 == 0 && int(s.virtualTime) > 0 {
+		effectiveRate := s.getEffectiveWriteRateMBps()
 		fmt.Printf("[QUEUE] t=%.1f: queue size=%d, write_rate=%.1f MB/s\n",
-			s.virtualTime, s.queue.Len(), s.config.WriteRateMBps)
+			s.virtualTime, s.queue.Len(), effectiveRate)
 	}
 }
 
@@ -312,40 +342,73 @@ func (s *Simulator) UpdateConfig(newConfig SimConfig) error {
 
 	// Save original values before checking for changes
 	originalWriteRate := s.config.WriteRateMBps
+	originalTrafficModel := s.config.TrafficDistribution.Model
 	originalSpeedMultiplier := s.config.SimulationSpeedMultiplier
 
-	// Check if any static parameters changed (dynamic params: writeRateMBps, simulationSpeedMultiplier)
+	// Check if any static parameters changed (dynamic params: writeRateMBps, simulationSpeedMultiplier, trafficDistribution)
 	oldConfig := s.config
 	oldConfig.WriteRateMBps = newConfig.WriteRateMBps                         // Ignore dynamic params
 	oldConfig.SimulationSpeedMultiplier = newConfig.SimulationSpeedMultiplier // Ignore dynamic params
+	oldConfig.TrafficDistribution = newConfig.TrafficDistribution             // Ignore dynamic params
 	newConfigCopy := newConfig
 
 	needsReset := oldConfig != newConfigCopy
 
+	// Sync top-level WriteRateMBps to TrafficDistribution.WriteRateMBps for constant model
+	// MUST do this BEFORE checking trafficDistChanged to ensure sync is detected
+	if newConfig.TrafficDistribution.Model == TrafficModelConstant {
+		// Always sync, even if rate didn't change (in case config was loaded with mismatch)
+		if newConfig.TrafficDistribution.WriteRateMBps != newConfig.WriteRateMBps {
+			newConfig.TrafficDistribution.WriteRateMBps = newConfig.WriteRateMBps
+		}
+	}
+
 	// Log dynamic config changes
 	rateChangedFromZero := originalWriteRate <= 0 && newConfig.WriteRateMBps > 0
+	trafficModelChanged := originalTrafficModel != newConfig.TrafficDistribution.Model
+	trafficDistChanged := s.config.TrafficDistribution != newConfig.TrafficDistribution
 
 	if originalWriteRate != newConfig.WriteRateMBps {
 		fmt.Printf("[CONFIG] Write rate changed: %.1f → %.1f MB/s (t=%.1f)\n",
 			originalWriteRate, newConfig.WriteRateMBps, s.virtualTime)
+		// If rate changed for constant model, force recreation of traffic distribution
+		if newConfig.TrafficDistribution.Model == TrafficModelConstant {
+			trafficDistChanged = true
+		}
+	}
+	if trafficModelChanged || trafficDistChanged {
+		if trafficModelChanged {
+			fmt.Printf("[CONFIG] Traffic model changed: %s → %s (t=%.1f)\n",
+				originalTrafficModel.String(), newConfig.TrafficDistribution.Model.String(), s.virtualTime)
+		} else {
+			fmt.Printf("[CONFIG] Traffic distribution parameters changed (t=%.1f)\n", s.virtualTime)
+		}
+		// Recreate traffic distribution
+		s.trafficDistribution = NewTrafficDistribution(newConfig.TrafficDistribution, newConfig.RandomSeed)
 	}
 	if originalSpeedMultiplier != newConfig.SimulationSpeedMultiplier {
 		fmt.Printf("[CONFIG] Speed multiplier changed: %d → %d (t=%.1f)\n",
 			originalSpeedMultiplier, newConfig.SimulationSpeedMultiplier, s.virtualTime)
 	}
 
-	// If compaction style changed, create new compactor
-	if s.config.CompactionStyle != newConfig.CompactionStyle {
-		fmt.Printf("[CONFIG] Compaction style changed: %s → %s (t=%.1f)\n",
-			s.config.CompactionStyle.String(), newConfig.CompactionStyle.String(), s.virtualTime)
+	// If compaction style or overlap distribution changed, create new compactor
+	overlapDistChanged := s.config.OverlapDistribution != newConfig.OverlapDistribution
+	if s.config.CompactionStyle != newConfig.CompactionStyle || overlapDistChanged {
+		if s.config.CompactionStyle != newConfig.CompactionStyle {
+			fmt.Printf("[CONFIG] Compaction style changed: %s → %s (t=%.1f)\n",
+				s.config.CompactionStyle.String(), newConfig.CompactionStyle.String(), s.virtualTime)
+		}
+		if overlapDistChanged {
+			fmt.Printf("[CONFIG] Overlap distribution changed (t=%.1f)\n", s.virtualTime)
+		}
 		var compactor Compactor
 		switch newConfig.CompactionStyle {
 		case CompactionStyleLeveled:
-			compactor = NewLeveledCompactor(newConfig.RandomSeed)
+			compactor = NewLeveledCompactorWithOverlapDist(newConfig.RandomSeed, newConfig.OverlapDistribution)
 		case CompactionStyleUniversal:
-			compactor = NewUniversalCompactor(newConfig.RandomSeed)
+			compactor = NewUniversalCompactorWithOverlapDist(newConfig.RandomSeed, newConfig.OverlapDistribution)
 		default:
-			compactor = NewUniversalCompactor(newConfig.RandomSeed)
+			compactor = NewUniversalCompactorWithOverlapDist(newConfig.RandomSeed, newConfig.OverlapDistribution)
 		}
 		s.compactor = compactor
 	}
@@ -355,14 +418,31 @@ func (s *Simulator) UpdateConfig(newConfig SimConfig) error {
 	if needsReset {
 		fmt.Printf("[CONFIG] Static config changed - resetting simulation (t=%.1f)\n", s.virtualTime)
 		s.Reset()
-	} else if rateChangedFromZero {
-		// Special case: rate changed from 0 to non-zero without reset
+	} else if rateChangedFromZero || trafficModelChanged || trafficDistChanged {
+		// Special case: rate changed from 0 to non-zero or traffic model/distribution changed without reset
 		// Need to kick-start write events
-		fmt.Printf("[CONFIG] Re-scheduling events (rate was 0, now %.1f MB/s)\n", newConfig.WriteRateMBps)
+		writeRate := newConfig.TrafficDistribution.WriteRateMBps
+		if newConfig.TrafficDistribution.Model == TrafficModelAdvancedONOFF {
+			writeRate = newConfig.TrafficDistribution.BaseRateMBps
+		}
+		if writeRate > 0 {
+			fmt.Printf("[CONFIG] Re-scheduling events (rate was 0, now %.1f MB/s)\n", writeRate)
+		}
 		s.ensureEventsScheduled()
 	}
 
 	return nil
+}
+
+// getEffectiveWriteRateMBps returns the effective write rate for metrics/debugging
+// For constant model: returns WriteRateMBps from TrafficDistribution
+// For advanced model: returns BaseRateMBps (average rate)
+func (s *Simulator) getEffectiveWriteRateMBps() float64 {
+	if s.config.TrafficDistribution.Model == TrafficModelConstant {
+		return s.config.TrafficDistribution.WriteRateMBps
+	}
+	// For advanced model, use base rate as effective rate
+	return s.config.TrafficDistribution.BaseRateMBps
 }
 
 // Config returns a copy of the current configuration
@@ -409,6 +489,14 @@ func (s *Simulator) State() map[string]interface{} {
 	} else if s.config.CompactionStyle == CompactionStyleLeveled && s.config.LevelCompactionDynamicLevelBytes {
 		baseLevel := s.lsm.calculateDynamicBaseLevel(s.config)
 		state["baseLevel"] = baseLevel
+	}
+
+	// Add current incoming write rate (for advanced traffic models)
+	if advDist, ok := s.trafficDistribution.(*AdvancedTrafficDistribution); ok {
+		state["currentIncomingRateMBps"] = advDist.GetCurrentRateMBps()
+	} else {
+		// For constant model, use the configured rate
+		state["currentIncomingRateMBps"] = s.config.TrafficDistribution.WriteRateMBps
 	}
 
 	return state
@@ -480,7 +568,8 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		// Calculate backlog based on stall duration and write rate
 		// This is more accurate than counting events, especially at high simulation speeds
 		stallDuration := s.virtualTime - s.stallStartTime
-		estimatedBacklogMB := stallDuration * s.config.WriteRateMBps
+		effectiveRate := s.getEffectiveWriteRateMBps()
+		estimatedBacklogMB := stallDuration * effectiveRate
 
 		// Increment backlog counter for tracking
 		s.stalledWriteBacklog++
@@ -1011,16 +1100,19 @@ func (s *Simulator) processCompactionCheck(event *CompactionCheckEvent) {
 // whether writes are being stalled or not. This separation allows for flexible
 // write arrival patterns (e.g., different distributions in the future).
 func (s *Simulator) processScheduleWrite(event *ScheduleWriteEvent) {
-	// Don't schedule writes if rate is 0 or negative
-	if s.config.WriteRateMBps <= 0 {
-		return
+	// Update traffic distribution with current virtual time (for advanced models)
+	if advDist, ok := s.trafficDistribution.(*AdvancedTrafficDistribution); ok {
+		advDist.UpdateTime(s.virtualTime)
 	}
 
-	// Calculate time until next write based on write rate
-	// WriteRateMBps is MB/s, so time between writes depends on write size
-	// For simplicity, write 1 MB at a time
-	writeSizeMB := 1.0
-	intervalSeconds := writeSizeMB / s.config.WriteRateMBps
+	// Check if traffic distribution indicates we should schedule writes
+	writeSizeMB := s.trafficDistribution.NextWriteSizeMB()
+	intervalSeconds := s.trafficDistribution.NextIntervalSeconds()
+
+	if writeSizeMB <= 0 || intervalSeconds <= 0 {
+		// No writes to schedule
+		return
+	}
 
 	// Schedule the write event at current virtualTime (NOW)
 	// CRITICAL: Always schedule from current virtualTime, NEVER from event.Timestamp()
@@ -1038,11 +1130,17 @@ func (s *Simulator) processScheduleWrite(event *ScheduleWriteEvent) {
 
 // scheduleNextScheduleWrite schedules the next ScheduleWriteEvent
 func (s *Simulator) scheduleNextScheduleWrite(currentTime float64) {
-	if s.config.WriteRateMBps <= 0 {
+	// Update traffic distribution with current virtual time (for advanced models)
+	// Use s.virtualTime (actual current time) not currentTime parameter (which might be future time)
+	if advDist, ok := s.trafficDistribution.(*AdvancedTrafficDistribution); ok {
+		advDist.UpdateTime(s.virtualTime)
+	}
+
+	// Check if traffic distribution indicates we should schedule writes
+	intervalSeconds := s.trafficDistribution.NextIntervalSeconds()
+	if intervalSeconds <= 0 {
 		return
 	}
-	writeSizeMB := 1.0
-	intervalSeconds := writeSizeMB / s.config.WriteRateMBps
 	nextSchedulerTime := currentTime + intervalSeconds
 	s.queue.Push(NewScheduleWriteEvent(nextSchedulerTime))
 }

@@ -626,6 +626,7 @@ func TestSimulator_Step15_ProcessScheduleWrite_SchedulesNextScheduleWrite(t *tes
 func TestSimulator_Step16_ProcessScheduleWrite_SkipsWhenRateZero(t *testing.T) {
 	config := DefaultConfig()
 	config.WriteRateMBps = 0 // Disable writes
+	config.TrafficDistribution.WriteRateMBps = 0 // Also disable in traffic distribution
 
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)

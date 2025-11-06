@@ -525,6 +525,12 @@ func (t *LSMTree) calculateDynamicBaseLevel(config SimConfig) int {
 		// Case 2: Find base level by working backwards
 		// RocksDB lines 4993-4998
 		// Use curLevelSize (already calculated for first_non_empty_level) in the WHILE loop
+		// This moves base level UPWARD (toward L1) when calculated target size would exceed base_bytes_max
+		// Note: This is based on calculated target sizes, not current level state.
+		// RocksDB's algorithm assumes that when CalculateBaseBytes is called, the version state
+		// is consistent. If a level becomes empty (e.g., L4 after L4→L5 compaction), then
+		// firstNonEmptyLevel will be recalculated on the next call, and base level will adjust.
+		// The backward movement here is based on target sizes, not checking if levels are empty.
 		for baseLevel > 1 && curLevelSize > baseBytesMax {
 			baseLevel--
 			curLevelSize = curLevelSize / float64(config.LevelMultiplier)

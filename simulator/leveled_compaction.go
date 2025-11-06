@@ -43,6 +43,17 @@ type LeveledCompactor struct {
 // - Geometric for overlaps: better balance than Exponential (less extreme bias toward 1 file)
 // If seed is 0, uses a time-based random seed
 func NewLeveledCompactor(seed int64) *LeveledCompactor {
+	// Use default overlap distribution (Geometric)
+	defaultOverlap := OverlapDistributionConfig{
+		Type:             DistGeometric,
+		GeometricP:       0.3,
+		ExponentialLambda: 0.5,
+	}
+	return NewLeveledCompactorWithOverlapDist(seed, defaultOverlap)
+}
+
+// NewLeveledCompactorWithOverlapDist creates a compactor with specified overlap distribution
+func NewLeveledCompactorWithOverlapDist(seed int64, overlapConfig OverlapDistributionConfig) *LeveledCompactor {
 	var rng *rand.Rand
 	if seed == 0 {
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -50,9 +61,20 @@ func NewLeveledCompactor(seed int64) *LeveledCompactor {
 		rng = rand.New(rand.NewSource(seed))
 	}
 
+	// Create overlap distribution based on config
+	var overlapDist Distribution
+	switch overlapConfig.Type {
+	case DistExponential:
+		overlapDist = &ExponentialDistribution{Lambda: overlapConfig.ExponentialLambda}
+	case DistGeometric:
+		overlapDist = &GeometricDistribution{P: overlapConfig.GeometricP}
+	default: // DistUniform
+		overlapDist = &UniformDistribution{}
+	}
+
 	return &LeveledCompactor{
 		fileSelectDist:    newDistributionAdapter(DistGeometric), // Favor picking fewer files
-		overlapSelectDist: newDistributionAdapter(DistGeometric), // Geometric better than Exponential for overlaps
+		overlapSelectDist: &distributionAdapter{dist: overlapDist, rng: rng},
 		rng:               rng,
 		activeCompactions: make(map[int]bool),
 	}

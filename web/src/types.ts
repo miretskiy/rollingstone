@@ -1,3 +1,29 @@
+// Traffic distribution types
+export type TrafficModel = "constant" | "advanced";
+
+export interface TrafficDistributionConfig {
+    model: TrafficModel;
+    writeRateMBps?: number; // For constant model
+    baseRateMBps?: number; // For advanced model
+    burstMultiplier?: number;
+    lognormalSigma?: number;
+    onMeanSeconds?: number;
+    offMeanSeconds?: number;
+    erlangK?: number;
+    spikeRatePerSec?: number;
+    spikeMeanDur?: number;
+    spikeAmplitudeMean?: number;
+    spikeAmplitudeSigma?: number;
+    capacityLimitMB?: number;
+    queueMode?: "drop" | "queue";
+}
+
+export interface OverlapDistributionConfig {
+    type: "uniform" | "exponential" | "geometric";
+    geometricP?: number;
+    exponentialLambda?: number;
+}
+
 // Message types for WebSocket communication
 export interface SimulationConfig {
     writeRateMBps: number;
@@ -23,6 +49,8 @@ export interface SimulationConfig {
     compactionStyle?: "leveled" | "universal"; // Compaction strategy (default "universal")
     maxSizeAmplificationPercent?: number; // max_size_amplification_percent for universal compaction (default 200%)
     levelCompactionDynamicLevelBytes?: boolean; // level_compaction_dynamic_level_bytes for leveled compaction (default false)
+    trafficDistribution?: TrafficDistributionConfig;
+    overlapDistribution?: OverlapDistributionConfig;
 }
 
 export interface CompactionStats {
@@ -95,6 +123,7 @@ export interface SimulationState {
     numImmutableMemtables?: number; // Number of immutable memtables waiting to flush
     immutableMemtableSizesMB?: number[]; // Sizes of immutable memtables waiting to flush
     baseLevel?: number; // Base level for universal compaction and leveled compaction with dynamic level bytes (lowest non-empty level below L0)
+    currentIncomingRateMBps?: number; // Current incoming write rate (for advanced traffic models, shows actual current rate)
 }
 
 export interface SimulationEvent {

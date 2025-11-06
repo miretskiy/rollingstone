@@ -1,8 +1,51 @@
-import { TrendingUp, Activity, Database, Clock } from 'lucide-react';
+import { TrendingUp, Activity, Database, Clock, ArrowDown } from 'lucide-react';
 import { useStore } from '../store';
 
 export function MetricsDashboard() {
     const { currentMetrics, currentState, config } = useStore();
+    
+    // Get incoming write rate from state (current rate) or config (fallback)
+    const getIncomingRate = () => {
+        // Prefer current rate from state (for advanced models, this shows actual current rate)
+        const currentRate = currentState?.currentIncomingRateMBps;
+        if (currentRate !== undefined && currentRate !== null) {
+            if (!config?.trafficDistribution || config.trafficDistribution.model === 'constant') {
+                return { rate: currentRate, isVariable: false };
+            } else {
+                // Advanced model: show current rate, but also show base/burst info
+                const traffic = config.trafficDistribution;
+                const baseRate = traffic.baseRateMBps || 0;
+                const burstRate = baseRate * (traffic.burstMultiplier || 1.0);
+                return { 
+                    rate: currentRate, 
+                    isVariable: true,
+                    burstRate: burstRate,
+                    baseRate: baseRate,
+                };
+            }
+        }
+        
+        // Fallback to config if state doesn't have current rate
+        if (!config?.trafficDistribution) {
+            return { rate: config?.writeRateMBps || 0, isVariable: false };
+        }
+        const traffic = config.trafficDistribution;
+        if (traffic.model === 'constant') {
+            return { rate: traffic.writeRateMBps || 0, isVariable: false };
+        } else {
+            // Advanced model: show base rate, but indicate it's variable
+            const baseRate = traffic.baseRateMBps || 0;
+            const burstRate = baseRate * (traffic.burstMultiplier || 1.0);
+            return { 
+                rate: baseRate, 
+                isVariable: true,
+                burstRate: burstRate,
+                baseRate: baseRate,
+            };
+        }
+    };
+    
+    const incomingRateInfo = getIncomingRate();
 
     const formatTime = (seconds: number) => {
         if (seconds < 60) return `${seconds.toFixed(1)}s`;
@@ -22,7 +65,31 @@ export function MetricsDashboard() {
     return (
         <div className="space-y-6">
             {/* Key Metrics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4">
+                {/* Incoming Write Rate */}
+                <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <ArrowDown className="w-4 h-4 text-cyan-400" />
+                            <span className="text-sm text-gray-400">Incoming Rate</span>
+                        </div>
+                    </div>
+                    <div className="text-3xl font-bold text-cyan-400">
+                        {incomingRateInfo.rate.toFixed(1)} MB/s
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                        {incomingRateInfo.isVariable ? (
+                            <>
+                                <div>Base: {incomingRateInfo.baseRate?.toFixed(1) || '0'} MB/s</div>
+                                <div>Burst: {incomingRateInfo.burstRate?.toFixed(1) || '0'} MB/s</div>
+                                <div className="text-cyan-400 mt-0.5">Variable (ON/OFF)</div>
+                            </>
+                        ) : (
+                            <div>Constant rate</div>
+                        )}
+                    </div>
+                </div>
+                
                 {/* Active Compactions */}
                 <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-2">

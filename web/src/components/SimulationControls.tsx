@@ -198,10 +198,23 @@ export function SimulationControls() {
 
           <button
             onClick={isRunning ? pause : start}
-            disabled={!isConnected}
-            className="flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold transition-all transform hover:scale-105 active:scale-95"
+            disabled={!isConnected || (currentMetrics?.isOOMKilled)}
+            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all transform hover:scale-105 active:scale-95 ${
+              currentMetrics?.isOOMKilled 
+                ? 'bg-red-600 cursor-not-allowed' 
+                : isRunning 
+                  ? 'bg-primary-600 hover:bg-primary-700' 
+                  : 'bg-primary-600 hover:bg-primary-700'
+            } ${!isConnected ? 'disabled:bg-gray-600 disabled:cursor-not-allowed' : ''}`}
+            title={currentMetrics?.isOOMKilled ? 'Simulation OOM killed - cannot resume' : undefined}
           >
-            {isRunning ? <><Pause className="w-5 h-5" />Pause</> : <><Play className="w-5 h-5" />Play</>}
+            {currentMetrics?.isOOMKilled ? (
+              <><AlertTriangle className="w-5 h-5" />OOM Killed</>
+            ) : isRunning ? (
+              <><Pause className="w-5 h-5" />Pause</>
+            ) : (
+              <><Play className="w-5 h-5" />Play</>
+            )}
           </button>
 
           <button
@@ -343,110 +356,6 @@ export function SimulationControls() {
                           </label>
                         </div>
                       )}
-                      
-                      {/* Overlap Distribution Controls */}
-                      <div className="mb-2 pb-2 border-b border-dark-border">
-                        <label className="text-sm text-gray-300 flex items-center gap-1 mb-2">
-                          Overlap Distribution
-                          <div className="group relative">
-                            <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Controls how many overlapping files are selected from the target level during compaction. This affects write amplification and compaction size. Uniform: equal probability for any overlap count. Geometric: favors fewer overlaps (good for balanced workloads). Exponential: strongly favors fewer overlaps (good for skewed workloads).
-                              </div>
-                          </div>
-                        </label>
-                        <select
-                          value={overlapDistType}
-                          onChange={(e) => {
-                            if (!isConnected || isRunning) return;
-                            const newType = e.target.value as "uniform" | "exponential" | "geometric";
-                            updateConfig({
-                              overlapDistribution: {
-                                ...(overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 }),
-                                type: newType,
-                              }
-                            });
-                          }}
-                          disabled={!isConnected || isRunning}
-                          className="w-full px-3 py-2 bg-dark-bg border border-dark-border rounded text-sm text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
-                          <option value="uniform">Uniform (Equal probability)</option>
-                          <option value="exponential">Exponential (Fewer overlaps)</option>
-                          <option value="geometric">Geometric (Fewer overlaps, balanced)</option>
-                        </select>
-                        {overlapDistType === 'geometric' && (
-                          <div className="mt-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <label className="text-xs text-gray-400 flex items-center gap-1">
-                                Bias Toward Fewer Overlaps
-                                <div className="group relative">
-                                  <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                    Geometric distribution success probability (P). Controls bias toward fewer overlaps. Higher values (0.5-0.9) = stronger bias toward 1 overlap. Lower values (0.1-0.3) = more balanced distribution. Default: 0.3 (30% chance of 1 overlap, decreasing geometrically).
-                              </div>
-                                </div>
-                              </label>
-                              <input
-                                type="number"
-                                min={0.1}
-                                max={0.9}
-                                
-                                value={geometricP}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val)) {
-                            updateConfig({
-                              overlapDistribution: {
-                                ...(overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 }),
-                                type: 'geometric',
-                                geometricP: Math.max(0.1, Math.min(0.9, val)),
-                              }
-                            });
-                                  }
-                                }}
-                                disabled={!isConnected || isRunning}
-                                className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                              />
-                            </div>
-                          </div>
-                        )}
-                        {overlapDistType === 'exponential' && (
-                          <div className="mt-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <label className="text-xs text-gray-400 flex items-center gap-1">
-                                Bias Toward Fewer Overlaps
-                                <div className="group relative">
-                                  <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                                  <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                    Exponential distribution rate parameter (Lambda). Controls bias toward fewer overlaps. Higher values (1.0-2.0) = stronger bias toward 1 overlap. Lower values (0.1-0.5) = more balanced distribution. Default: 0.5.
-                              </div>
-                                </div>
-                              </label>
-                              <input
-                                type="number"
-                                min={0.1}
-                                max={2.0}
-                                
-                                value={exponentialLambda}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  if (!isNaN(val)) {
-                                    updateConfig({
-                                      overlapDistribution: {
-                                        ...(overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 }),
-                                        type: 'exponential',
-                                        exponentialLambda: Math.max(0.1, Math.min(2.0, val)),
-                                      }
-                                    });
-                                  }
-                                }}
-                                disabled={!isConnected || isRunning}
-                                className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
                     </div>
                   </div>
                 )}
@@ -610,6 +519,139 @@ export function SimulationControls() {
                 )}
                 <ConfigInput label="Deduplication Factor" field="compactionReductionFactor" min={0.1} max={1.0}
                   tooltip="Data reduction during compaction (0.9 = 10% reduction)" />
+              </div>
+              
+              {/* Overlap Distribution Controls */}
+              <div className="mt-3 pb-3 border-b border-dark-border">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <label className="text-sm text-gray-300 flex items-center gap-1">
+                    Overlap Distribution:
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                        Controls how many overlapping files are selected from the target level during compaction. This affects write amplification and compaction size. The overlap pattern depends on your workload: uniform writes create many overlaps, skewed workloads create fewer. Uniform: equal probability for any overlap count. Geometric: favors fewer overlaps (good for balanced workloads). Exponential: strongly favors fewer overlaps (good for skewed workloads).
+                      </div>
+                    </div>
+                  </label>
+                  <select
+                    value={overlapDistType}
+                    onChange={(e) => {
+                      try {
+                        if (!isConnected || isRunning) return;
+                        const newType = e.target.value as "uniform" | "exponential" | "geometric";
+                        console.log('[OverlapDist] Changing type to:', newType, 'current overlapDist:', overlapDist);
+                        
+                        // Ensure we have a valid overlapDist object with all required fields
+                        const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                        
+                        // Create new overlap distribution config
+                        const newOverlapDist: { type: "uniform" | "exponential" | "geometric"; geometricP?: number; exponentialLambda?: number } = {
+                          type: newType,
+                          // Preserve existing parameters (they're optional, so only include if they exist)
+                          ...(currentOverlapDist.geometricP !== undefined && { geometricP: currentOverlapDist.geometricP }),
+                          ...(currentOverlapDist.exponentialLambda !== undefined && { exponentialLambda: currentOverlapDist.exponentialLambda }),
+                        };
+                        
+                        // Ensure defaults are set for the selected type
+                        if (newType === 'geometric' && newOverlapDist.geometricP === undefined) {
+                          newOverlapDist.geometricP = 0.3;
+                        }
+                        if (newType === 'exponential' && newOverlapDist.exponentialLambda === undefined) {
+                          newOverlapDist.exponentialLambda = 0.5;
+                        }
+                        
+                        console.log('[OverlapDist] New config:', newOverlapDist);
+                        
+                        updateConfig({
+                          overlapDistribution: newOverlapDist
+                        });
+                      } catch (error) {
+                        console.error('[OverlapDist] Error changing distribution type:', error);
+                        alert(`Error changing overlap distribution: ${error instanceof Error ? error.message : String(error)}`);
+                      }
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className="px-3 py-1.5 bg-dark-bg border border-dark-border rounded text-sm text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="uniform">Uniform</option>
+                    <option value="exponential">Exponential</option>
+                    <option value="geometric">Geometric</option>
+                  </select>
+                  {overlapDistType === 'geometric' && (
+                    <>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">
+                        Bias:
+                        <div className="group relative">
+                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                            Geometric distribution success probability (P). Controls bias toward fewer overlaps. Higher values (0.5-0.9) = stronger bias toward 1 overlap. Lower values (0.1-0.3) = more balanced distribution. Default: 0.3 means 30% chance of 1 overlap, 21% chance of 2 overlaps, 14.7% chance of 3 overlaps, etc. (probability decreases geometrically as overlap count increases). Note: 0 overlaps (trivial moves) are handled separately and not part of this distribution.
+                          </div>
+                        </div>
+                      </label>
+                      <NumberInput
+                        value={geometricP}
+                        onChange={(val) => {
+                          try {
+                            const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                            const clampedVal = Math.max(0.1, Math.min(0.9, val));
+                            console.log('[OverlapDist] Updating geometricP to:', clampedVal);
+                            updateConfig({
+                              overlapDistribution: {
+                                ...currentOverlapDist,
+                                type: 'geometric',
+                                geometricP: clampedVal,
+                              }
+                            });
+                          } catch (error) {
+                            console.error('[OverlapDist] Error updating geometricP:', error);
+                            alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
+                          }
+                        }}
+                        min={0.1}
+                        max={0.9}
+                        disabled={!isConnected || isRunning}
+                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      />
+                    </>
+                  )}
+                  {overlapDistType === 'exponential' && (
+                    <>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">
+                        Bias:
+                        <div className="group relative">
+                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                            Exponential distribution rate parameter (Lambda). Controls bias toward fewer overlaps. Higher values (1.0-2.0) = stronger bias toward 1 overlap. Lower values (0.1-0.5) = more balanced distribution. Default: 0.5.
+                          </div>
+                        </div>
+                      </label>
+                      <NumberInput
+                        value={exponentialLambda}
+                        onChange={(val) => {
+                          try {
+                            const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                            const clampedVal = Math.max(0.1, Math.min(2.0, val));
+                            console.log('[OverlapDist] Updating exponentialLambda to:', clampedVal);
+                            updateConfig({
+                              overlapDistribution: {
+                                ...currentOverlapDist,
+                                type: 'exponential',
+                                exponentialLambda: clampedVal,
+                              }
+                            });
+                          } catch (error) {
+                            console.error('[OverlapDist] Error updating exponentialLambda:', error);
+                            alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
+                          }
+                        }}
+                        min={0.1}
+                        max={2.0}
+                        disabled={!isConnected || isRunning}
+                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      />
+                    </>
+                  )}
+                </div>
               </div>
               
               {/* Advanced Traffic Parameters (collapsible) */}

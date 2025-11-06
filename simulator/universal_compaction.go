@@ -1111,11 +1111,15 @@ func (c *UniversalCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree,
 	}()
 
 	// Universal compaction execution is similar to leveled compaction
-	// Reuse the leveled compaction execution logic
+	// Reuse the leveled compaction execution logic (including subcompaction support)
+	// Note: Subcompactions are supported for universal compaction in RocksDB
+	// (see Compaction::ShouldFormSubcompactions() - universal compaction returns true
+	//  when number_levels_ > 1 && output_level_ > 0)
 	leveledCompactor := &LeveledCompactor{
 		fileSelectDist:    c.fileSelectDist,
 		overlapSelectDist: c.overlapSelectDist,
 		rng:               c.rng,
+		activeCompactions: make(map[int]bool), // Initialize to avoid nil map panic
 	}
 	return leveledCompactor.ExecuteCompaction(job, lsm, config, virtualTime)
 }

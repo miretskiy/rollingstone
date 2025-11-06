@@ -133,7 +133,7 @@ func (s *simState) getConfig() simulator.SimConfig {
 }
 
 // step advances simulation by one step (called by UI ticker)
-// Returns error message if simulation panicked
+// Returns error message if simulation panicked or OOM killed
 func (s *simState) step() (errMsg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,7 +151,21 @@ func (s *simState) step() (errMsg string) {
 		}
 	}()
 
+	// Check if already OOM killed before stepping
+	if s.sim.Metrics().IsOOMKilled {
+		s.running = false // Stop the simulation
+		return "Simulation OOM killed"
+	}
+
 	s.sim.Step()
+
+	// Check if OOM occurred during this step
+	if s.sim.Metrics().IsOOMKilled {
+		s.running = false // Stop the simulation
+		log.Printf("⚠️  Simulation OOM killed at virtual time %.1f", s.sim.VirtualTime())
+		return "Simulation OOM killed"
+	}
+
 	return ""
 }
 
@@ -258,18 +272,40 @@ func uiUpdateLoop(conn *safeConn, state *simState) {
 				// Advance simulation by one step
 				// (Virtual time advanced determined by SimulationSpeedMultiplier)
 				if errMsg := state.step(); errMsg != "" {
-					// Simulation panicked - send error to UI and stop
+					// Simulation panicked or OOM killed - send error to UI and stop
 					errorMsg := ServerMessage{
 						Type:  "error",
 						Error: &errMsg,
 					}
 					if err := conn.WriteJSON(errorMsg); err != nil {
-						log.Printf("Error sending panic error: %v", err)
+						log.Printf("Error sending error message: %v", err)
+					}
+
+					// Send stopped status with final metrics/state
+					running := false
+					config := state.getConfig()
+					metrics := state.metrics()
+					lsmState := state.state()
+					
+					// Send final metrics update (includes OOM status)
+					metricsMsg := ServerMessage{
+						Type:    "metrics",
+						Metrics: metrics,
+					}
+					if err := conn.WriteJSON(metricsMsg); err != nil {
+						log.Printf("Error sending final metrics: %v", err)
+					}
+
+					// Send final state update
+					stateMsg := ServerMessage{
+						Type:  "state",
+						State: lsmState,
+					}
+					if err := conn.WriteJSON(stateMsg); err != nil {
+						log.Printf("Error sending final state: %v", err)
 					}
 
 					// Send stopped status
-					running := false
-					config := state.getConfig()
 					statusMsg := ServerMessage{
 						Type:    "status",
 						Running: &running,
@@ -367,8 +403,18 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		var msg ClientMessage
 		err := conn.ReadJSON(&msg)
 		if err != nil {
+			// Log all errors, not just unexpected close errors
+			// JSON unmarshaling errors (e.g., invalid enum values) are not close errors
+			// but they're still important to log
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Error reading message: %v", err)
+				log.Printf("Error reading message (unexpected close): %v", err)
+			} else if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				// Normal close - don't log as error
+				log.Printf("Client closed connection normally")
+			} else {
+				// JSON unmarshaling or other errors - these are important!
+				log.Printf("Error reading/parsing WebSocket message: %v", err)
+				log.Printf("This could be due to invalid JSON, type mismatches, or enum parsing errors")
 			}
 			break
 		}

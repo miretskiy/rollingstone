@@ -8,26 +8,63 @@ import type {
     ConnectionStatus,
 } from './types';
 
-const CONFIG_STORAGE_KEY = 'rollingstone-config';
+const CONFIG_COOKIE_NAME = 'rollingstone-config';
+const COOKIE_MAX_AGE_DAYS = 365; // Persist for 1 year
 
-// Load configuration from localStorage
-function loadConfigFromStorage(): Partial<SimulationConfig> | null {
+// Cookie utility functions
+function setCookie(name: string, value: string, days: number): void {
     try {
-        const stored = localStorage.getItem(CONFIG_STORAGE_KEY);
-        if (!stored) return null;
-        return JSON.parse(stored);
+        const expires = new Date();
+        expires.setTime(expires.getTime() + days * 24 * 60 * 60 * 1000);
+        document.cookie = `${name}=${encodeURIComponent(value)};expires=${expires.toUTCString()};path=/;SameSite=Lax`;
     } catch (error) {
-        console.warn('Failed to load config from localStorage:', error);
+        console.warn('Failed to set cookie:', error);
+    }
+}
+
+function getCookie(name: string): string | null {
+    try {
+        const nameEQ = name + '=';
+        const ca = document.cookie.split(';');
+        for (let i = 0; i < ca.length; i++) {
+            let c = ca[i];
+            while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+            if (c.indexOf(nameEQ) === 0) {
+                return decodeURIComponent(c.substring(nameEQ.length, c.length));
+            }
+        }
+        return null;
+    } catch (error) {
+        console.warn('Failed to read cookie:', error);
         return null;
     }
 }
 
-// Save configuration to localStorage
+// Load configuration from cookie
+function loadConfigFromStorage(): Partial<SimulationConfig> | null {
+    try {
+        const stored = getCookie(CONFIG_COOKIE_NAME);
+        if (!stored) return null;
+        return JSON.parse(stored);
+    } catch (error) {
+        console.warn('Failed to load config from cookie:', error);
+        return null;
+    }
+}
+
+// Save configuration to cookie
 function saveConfigToStorage(config: SimulationConfig): void {
     try {
-        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+        const configStr = JSON.stringify(config);
+        // Cookies have a 4KB limit, so check size
+        if (configStr.length > 4000) {
+            console.warn('Config too large for cookie, truncating...');
+            // For very large configs, we could split across multiple cookies
+            // For now, just save what fits
+        }
+        setCookie(CONFIG_COOKIE_NAME, configStr, COOKIE_MAX_AGE_DAYS);
     } catch (error) {
-        console.warn('Failed to save config to localStorage:', error);
+        console.warn('Failed to save config to cookie:', error);
     }
 }
 
@@ -155,6 +192,12 @@ export const useStore = create<AppStore>((set, get) => ({
             newWs.onopen = () => {
                 console.log('WebSocket connected');
                 set({ connectionStatus: 'connected', ws: newWs });
+                
+                // Send saved config to server on connection
+                // This ensures server uses the persisted configuration
+                const currentConfig = get().config;
+                console.log('[Store] Sending saved config to server on connection:', currentConfig);
+                get().sendMessage({ type: 'config_update', config: currentConfig });
             };
 
             newWs.onclose = () => {
@@ -189,9 +232,19 @@ export const useStore = create<AppStore>((set, get) => ({
     sendMessage: (message: WSMessage) => {
         const { ws, connectionStatus } = get();
         if (ws && connectionStatus === 'connected') {
-            ws.send(JSON.stringify(message));
+            const messageStr = JSON.stringify(message);
+            console.log('[Store] Sending WebSocket message:', message.type, messageStr.length, 'bytes');
+            if (message.type === 'config_update') {
+                console.log('[Store] Config update message content:', messageStr);
+            }
+            try {
+                ws.send(messageStr);
+            } catch (error) {
+                console.error('[Store] Error sending WebSocket message:', error);
+                throw error;
+            }
         } else {
-            console.warn('Cannot send message: WebSocket not connected');
+            console.warn('Cannot send message: WebSocket not connected', { connectionStatus, hasWs: !!ws });
         }
     },
 
@@ -223,45 +276,77 @@ export const useStore = create<AppStore>((set, get) => ({
     },
 
     updateConfig: (configUpdate: Partial<SimulationConfig>) => {
-        const currentConfig = get().config;
-        const newConfig = { ...currentConfig };
-        
-        // Deep merge nested configs
-        if (configUpdate.trafficDistribution) {
-            newConfig.trafficDistribution = {
-                ...(currentConfig.trafficDistribution || { model: 'constant', writeRateMBps: currentConfig.writeRateMBps }),
-                ...configUpdate.trafficDistribution,
-            };
-        }
-        
-        if (configUpdate.overlapDistribution) {
-            newConfig.overlapDistribution = {
-                ...(currentConfig.overlapDistribution || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 }),
-                ...configUpdate.overlapDistribution,
-            };
-        }
-        
-        // Merge top-level config
-        Object.assign(newConfig, configUpdate);
-        
-        // Automatically disable levelCompactionDynamicLevelBytes when compaction style is universal
-        if (newConfig.compactionStyle === 'universal') {
-            newConfig.levelCompactionDynamicLevelBytes = false;
-        }
-        // Automatically enable levelCompactionDynamicLevelBytes when compaction style is leveled (RocksDB default)
-        else if (newConfig.compactionStyle === 'leveled' && configUpdate.compactionStyle === 'leveled') {
-            // Only enable if explicitly switching to leveled (not if it was already leveled)
-            if (currentConfig.compactionStyle !== 'leveled') {
-                newConfig.levelCompactionDynamicLevelBytes = true;
+        try {
+            console.log('[Store] updateConfig called with:', configUpdate);
+            const currentConfig = get().config;
+            const newConfig = { ...currentConfig };
+            
+            // Deep merge nested configs
+            if (configUpdate.trafficDistribution) {
+                newConfig.trafficDistribution = {
+                    ...(currentConfig.trafficDistribution || { model: 'constant', writeRateMBps: currentConfig.writeRateMBps }),
+                    ...configUpdate.trafficDistribution,
+                };
             }
+            
+            if (configUpdate.overlapDistribution) {
+                const currentOverlap = currentConfig.overlapDistribution || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                const updateOverlap = configUpdate.overlapDistribution;
+                
+                console.log('[Store] Merging overlapDistribution - current:', currentOverlap, 'update:', updateOverlap);
+                
+                // Validate type
+                if (updateOverlap.type && !['uniform', 'exponential', 'geometric'].includes(updateOverlap.type)) {
+                    throw new Error(`Invalid overlapDistribution.type: ${updateOverlap.type}. Must be 'uniform', 'exponential', or 'geometric'`);
+                }
+                
+                newConfig.overlapDistribution = {
+                    ...currentOverlap,
+                    ...updateOverlap,
+                    // Ensure type is always set
+                    type: (updateOverlap.type || currentOverlap.type || 'geometric') as "uniform" | "exponential" | "geometric",
+                };
+                
+                console.log('[Store] Merged overlapDistribution:', newConfig.overlapDistribution);
+            }
+            
+            // Merge top-level config
+            Object.assign(newConfig, configUpdate);
+            
+            // Automatically disable levelCompactionDynamicLevelBytes when compaction style is universal
+            if (newConfig.compactionStyle === 'universal') {
+                newConfig.levelCompactionDynamicLevelBytes = false;
+            }
+            // Automatically enable levelCompactionDynamicLevelBytes when compaction style is leveled (RocksDB default)
+            else if (newConfig.compactionStyle === 'leveled' && configUpdate.compactionStyle === 'leveled') {
+                // Only enable if explicitly switching to leveled (not if it was already leveled)
+                if (currentConfig.compactionStyle !== 'leveled') {
+                    newConfig.levelCompactionDynamicLevelBytes = true;
+                }
+            }
+            
+            // Validate final config
+            if (newConfig.overlapDistribution && !newConfig.overlapDistribution.type) {
+                throw new Error('overlapDistribution.type is required');
+            }
+            
+            console.log('[Store] Final config before save:', newConfig);
+            
+            // Save to localStorage
+            saveConfigToStorage(newConfig);
+            
+            // Send the FULL config to backend (it expects complete SimConfig)
+            get().sendMessage({ type: 'config_update', config: newConfig });
+            set({ config: newConfig });
+            
+            console.log('[Store] Config updated successfully');
+        } catch (error) {
+            console.error('[Store] Error in updateConfig:', error);
+            console.error('[Store] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+            console.error('[Store] Config update that failed:', configUpdate);
+            alert(`Error updating configuration: ${error instanceof Error ? error.message : String(error)}\n\nCheck browser console for details.`);
+            throw error; // Re-throw so caller can handle it
         }
-        
-        // Save to localStorage
-        saveConfigToStorage(newConfig);
-        
-        // Send the FULL config to backend (it expects complete SimConfig)
-        get().sendMessage({ type: 'config_update', config: newConfig });
-        set({ config: newConfig });
     },
 
     // Message handling
@@ -283,14 +368,34 @@ export const useStore = create<AppStore>((set, get) => ({
                             exponentialLambda: 0.5,
                         };
                     }
+                    
+                    // Only update config from server if we don't have a saved config
+                    // This prevents overwriting user's saved config with server defaults
+                    const hasSavedConfig = loadConfigFromStorage() !== null;
                     if (statusConfig) {
-                        // Save config from server to localStorage (in case server was restarted)
-                        saveConfigToStorage(statusConfig);
+                        if (!hasSavedConfig) {
+                            // No saved config - use server's config and save it
+                            console.log('[Store] No saved config found, using server config');
+                            saveConfigToStorage(statusConfig);
+                            set({
+                                isRunning: message.running,
+                                config: statusConfig,
+                            });
+                        } else {
+                            // We have saved config - keep it and send it to server
+                            // (Server will update on next config_update message)
+                            console.log('[Store] Keeping saved config, ignoring server default');
+                            // Still update isRunning from server
+                            set({
+                                isRunning: message.running,
+                                // Keep current config (from localStorage)
+                            });
+                        }
+                    } else {
+                        set({
+                            isRunning: message.running,
+                        });
                     }
-                    set({
-                        isRunning: message.running,
-                        config: statusConfig,
-                    });
                     break;
 
                 case 'metrics':
@@ -305,6 +410,14 @@ export const useStore = create<AppStore>((set, get) => ({
                 case 'state':
                     // console.log('State update:', message.state);
                     set({ currentState: message.state });
+                    break;
+
+                case 'error':
+                    // Error occurred (panic or OOM) - simulation should be stopped
+                    console.error('[Store] Simulation error:', message.error);
+                    // Error message will be shown in UI, but also ensure isRunning is false
+                    // (server should send status message with running=false, but be defensive)
+                    set({ isRunning: false });
                     break;
 
                 case 'event':

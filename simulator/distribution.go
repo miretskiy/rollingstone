@@ -1,6 +1,8 @@
 package simulator
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand"
 )
@@ -13,6 +15,53 @@ const (
 	DistExponential
 	DistGeometric
 )
+
+// String returns the string representation of DistributionType
+func (dt DistributionType) String() string {
+	switch dt {
+	case DistUniform:
+		return "uniform"
+	case DistExponential:
+		return "exponential"
+	case DistGeometric:
+		return "geometric"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(dt))
+	}
+}
+
+// ParseDistributionType parses a string into a DistributionType
+func ParseDistributionType(s string) (DistributionType, error) {
+	switch s {
+	case "uniform":
+		return DistUniform, nil
+	case "exponential":
+		return DistExponential, nil
+	case "geometric":
+		return DistGeometric, nil
+	default:
+		return DistGeometric, fmt.Errorf("invalid DistributionType: %s (must be 'uniform', 'exponential', or 'geometric')", s)
+	}
+}
+
+// MarshalJSON implements json.Marshaler for DistributionType
+func (dt DistributionType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(dt.String())
+}
+
+// UnmarshalJSON implements json.Unmarshaler for DistributionType
+func (dt *DistributionType) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseDistributionType(s)
+	if err != nil {
+		return err
+	}
+	*dt = parsed
+	return nil
+}
 
 // Distribution interface for generating random values
 type Distribution interface {

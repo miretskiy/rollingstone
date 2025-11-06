@@ -144,7 +144,8 @@ export type WSMessage =
     | { type: 'metrics'; metrics: SimulationMetrics }
     | { type: 'state'; state: SimulationState }
     | { type: 'event'; event: SimulationEvent }
-    | { type: 'log'; log: string };
+    | { type: 'log'; log: string }
+    | { type: 'error'; error: string };
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 

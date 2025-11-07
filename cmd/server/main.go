@@ -88,7 +88,10 @@ func (s *simState) start() {
 	// Check if queue is empty to detect this
 	if s.sim.IsQueueEmpty() {
 		log.Println("First start detected - resetting to schedule events")
-		s.sim.Reset()
+		if err := s.sim.Reset(); err != nil {
+			log.Printf("Error resetting simulation: %v", err)
+			return
+		}
 	}
 
 	s.running = true
@@ -103,12 +106,15 @@ func (s *simState) pause() {
 }
 
 // reset resets the simulation
-func (s *simState) reset() {
+func (s *simState) reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sim.Reset()
+	if err := s.sim.Reset(); err != nil {
+		return fmt.Errorf("failed to reset simulation: %w", err)
+	}
 	s.running = false
 	s.paused = false
+	return nil
 }
 
 // updateConfig updates the configuration
@@ -447,8 +453,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			safeConn.WriteJSON(statusMsg)
 
 		case "reset":
-			state.reset()
-			log.Println("Simulator reset")
+			if err := state.reset(); err != nil {
+				log.Printf("Error resetting simulator: %v", err)
+			} else {
+				log.Println("Simulator reset")
+			}
 			running := false
 			cfg := state.getConfig()
 			statusMsg := ServerMessage{
@@ -480,6 +489,28 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					safeConn.WriteJSON(statusMsg)
 				}
+			}
+
+		case "reset_config":
+			// Reset config to defaults
+			defaultConfig := simulator.DefaultConfig()
+			if err := state.updateConfig(defaultConfig); err != nil {
+				log.Printf("Error resetting config to defaults: %v", err)
+				errStr := err.Error()
+				errorMsg := ServerMessage{
+					Type:  "error",
+					Error: &errStr,
+				}
+				safeConn.WriteJSON(errorMsg)
+			} else {
+				log.Println("Config reset to defaults")
+				running := state.isRunning()
+				statusMsg := ServerMessage{
+					Type:    "status",
+					Running: &running,
+					Config:  &defaultConfig,
+				}
+				safeConn.WriteJSON(statusMsg)
 			}
 		}
 	}

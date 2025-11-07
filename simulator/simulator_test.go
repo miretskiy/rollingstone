@@ -625,7 +625,7 @@ func TestSimulator_Step15_ProcessScheduleWrite_SchedulesNextScheduleWrite(t *tes
 // Then: Should return without scheduling anything
 func TestSimulator_Step16_ProcessScheduleWrite_SkipsWhenRateZero(t *testing.T) {
 	config := DefaultConfig()
-	config.WriteRateMBps = 0 // Disable writes
+	config.WriteRateMBps = 0                     // Disable writes
 	config.TrafficDistribution.WriteRateMBps = 0 // Also disable in traffic distribution
 
 	sim, err := NewSimulator(config)
@@ -1383,7 +1383,7 @@ func TestSimulator_Step36_Step_DoesNotGetStuckAt17Seconds(t *testing.T) {
 	require.NoError(t, err)
 
 	// CRITICAL: Match exact server behavior
-	sim.Reset()
+	require.NoError(t, sim.Reset())
 
 	// Run Step() 850+ times (17 seconds × 50 steps/second = 850 steps)
 	// UI runs at 20ms intervals = 50 steps/second
@@ -1451,7 +1451,7 @@ func TestSimulator_Step37_NoPastEventsEverScheduled(t *testing.T) {
 
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)
-	sim.Reset()
+	require.NoError(t, sim.Reset())
 
 	// Run a few steps and verify NO events are ever scheduled in the past
 	for i := 0; i < 10; i++ {

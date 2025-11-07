@@ -45,8 +45,8 @@ type LeveledCompactor struct {
 func NewLeveledCompactor(seed int64) *LeveledCompactor {
 	// Use default overlap distribution (Geometric)
 	defaultOverlap := OverlapDistributionConfig{
-		Type:             DistGeometric,
-		GeometricP:       0.3,
+		Type:              DistGeometric,
+		GeometricP:        0.3,
 		ExponentialLambda: 0.5,
 	}
 	return NewLeveledCompactorWithOverlapDist(seed, defaultOverlap)

@@ -25,7 +25,7 @@ func TestUniversalCompactionL2BaseLevelRegression(t *testing.T) {
 
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)
-	sim.Reset()
+	require.NoError(t, sim.Reset())
 
 	// Track state over time to detect infinite loops
 	type StepState struct {
@@ -164,7 +164,7 @@ func TestUniversalCompactionBaseLevelProgressionIntegration(t *testing.T) {
 
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)
-	sim.Reset()
+	require.NoError(t, sim.Reset())
 
 	// Track base level progression
 	baseLevelHistory := make([]int, 0)
@@ -235,7 +235,7 @@ func TestUniversalCompactionL2CompactionWhenSelected(t *testing.T) {
 
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)
-	sim.Reset()
+	require.NoError(t, sim.Reset())
 
 	// Run until base level is L2
 	maxSteps := 100

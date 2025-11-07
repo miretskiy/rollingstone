@@ -93,6 +93,7 @@ interface AppStore {
     reset: () => void;
     step: () => void;
     updateConfig: (config: Partial<SimulationConfig>) => void;
+    resetConfig: () => void;
 
     // Internal
     handleMessage: (data: string) => void;
@@ -349,6 +350,23 @@ export const useStore = create<AppStore>((set, get) => ({
         }
     },
 
+    resetConfig: () => {
+        // Clear the saved config from cookie
+        try {
+            // Delete cookie by setting it to expire in the past
+            setCookie(CONFIG_COOKIE_NAME, '', -1);
+            console.log('[Store] Cleared saved config from cookie');
+        } catch (error) {
+            console.warn('[Store] Failed to clear config cookie:', error);
+        }
+        
+        // Send reset_config message to server
+        get().sendMessage({ type: 'reset_config' });
+        
+        // The server will respond with a status message containing the default config,
+        // which will update the store via handleMessage
+    },
+
     // Message handling
     handleMessage: (data: string) => {
         try {
@@ -369,8 +387,10 @@ export const useStore = create<AppStore>((set, get) => ({
                         };
                     }
                     
-                    // Only update config from server if we don't have a saved config
-                    // This prevents overwriting user's saved config with server defaults
+                    // Update config from server if:
+                    // 1. We don't have a saved config, OR
+                    // 2. The cookie was just cleared (indicated by cookie being empty/null)
+                    // This allows reset_config to work properly
                     const hasSavedConfig = loadConfigFromStorage() !== null;
                     if (statusConfig) {
                         if (!hasSavedConfig) {
@@ -384,12 +404,24 @@ export const useStore = create<AppStore>((set, get) => ({
                         } else {
                             // We have saved config - keep it and send it to server
                             // (Server will update on next config_update message)
-                            console.log('[Store] Keeping saved config, ignoring server default');
-                            // Still update isRunning from server
-                            set({
-                                isRunning: message.running,
-                                // Keep current config (from localStorage)
-                            });
+                            // EXCEPT: if cookie is empty, accept server config (reset_config case)
+                            const cookieValue = getCookie(CONFIG_COOKIE_NAME);
+                            if (!cookieValue || cookieValue === '') {
+                                // Cookie was cleared (reset_config case) - accept server defaults
+                                console.log('[Store] Cookie cleared, accepting server default config');
+                                saveConfigToStorage(statusConfig);
+                                set({
+                                    isRunning: message.running,
+                                    config: statusConfig,
+                                });
+                            } else {
+                                console.log('[Store] Keeping saved config, ignoring server default');
+                                // Still update isRunning from server
+                                set({
+                                    isRunning: message.running,
+                                    // Keep current config (from localStorage)
+                                });
+                            }
                         }
                     } else {
                         set({

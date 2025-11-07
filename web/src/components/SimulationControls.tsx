@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle, HelpCircle } from 'lucide-react';
+import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
 import { useStore } from '../store';
 import type { SimulationConfig } from '../types';
 import { ConfigInput } from './ConfigInput';
@@ -70,7 +70,7 @@ function NumberInput({
 }
 
 export function SimulationControls() {
-  const { connectionStatus, isRunning, start, pause, reset, updateConfig } = useStore();
+  const { connectionStatus, isRunning, start, pause, reset, resetConfig, updateConfig } = useStore();
   // Read current config values
   const ioLatency = useStore(state => state.config.ioLatencyMs);
   const ioThroughput = useStore(state => state.config.ioThroughputMBps);
@@ -188,6 +188,19 @@ export function SimulationControls() {
         <div className="flex items-center gap-2">
           <Settings className="w-5 h-5 text-primary-400" />
           <h2 className="text-xl font-bold">Simulation Controls</h2>
+          <div className="group relative">
+            <button
+              onClick={resetConfig}
+              disabled={!isConnected || isRunning}
+              className="p-1.5 bg-dark-bg hover:bg-gray-700 disabled:bg-gray-800 disabled:cursor-not-allowed rounded transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50"
+              title={isRunning ? "Cannot reset configuration while simulation is running" : "Reset configuration to default values"}
+            >
+              <RefreshCw className="w-4 h-4 text-gray-400" />
+            </button>
+            <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg pointer-events-none">
+              {isRunning ? "Cannot reset configuration while simulation is running" : "Reset all configuration values to their defaults"}
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -221,7 +234,7 @@ export function SimulationControls() {
             onClick={reset}
             disabled={!isConnected}
             className="p-3 bg-dark-bg hover:bg-gray-700 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg transition-all transform hover:scale-105 active:scale-95"
-            title="Reset"
+            title="Reset Simulation"
           >
             <RotateCcw className="w-5 h-5" />
           </button>

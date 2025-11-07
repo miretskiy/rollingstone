@@ -140,6 +140,7 @@ export type WSMessage =
     | { type: 'reset' }
     | { type: 'step' }
     | { type: 'config_update'; config: Partial<SimulationConfig> }
+    | { type: 'reset_config' }
     | { type: 'status'; running: boolean; config: SimulationConfig }
     | { type: 'metrics'; metrics: SimulationMetrics }
     | { type: 'state'; state: SimulationState }

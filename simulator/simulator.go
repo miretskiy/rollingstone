@@ -231,20 +231,22 @@ func (s *Simulator) Step() {
 }
 
 // Reset resets the simulation to initial state and schedules events
-func (s *Simulator) Reset() {
-	s.lsm = NewLSMTree(s.config.NumLevels, float64(s.config.MemtableFlushSizeMB))
-	s.metrics = NewMetrics()
-	s.queue.Clear()
-	s.virtualTime = 0
-	s.diskBusyUntil = 0
-	s.numImmutableMemtables = 0
-	s.immutableMemtableSizes = make([]float64, 0)
-	s.activeCompactionInfos = make([]*ActiveCompactionInfo, 0)
-	s.pendingCompactions = make(map[int]*CompactionJob)
-	s.stallStartTime = 0
-	s.stalledWriteBacklog = 0
-	s.nextFlushCompletionTime = 0
-	s.metrics.IsOOMKilled = false // Clear OOM flag on reset
+func (s *Simulator) Reset() error {
+	// Create a fresh simulator using the same config
+	// This ensures all internal state (including compactor's activeCompactions) is fresh
+	newSim, err := NewSimulator(s.config)
+	if err != nil {
+		return fmt.Errorf("reset failed: %w", err)
+	}
+
+	// Preserve the LogEvent callback if it was set
+	logEvent := s.LogEvent
+
+	// Copy all fields from the new simulator
+	*s = *newSim
+
+	// Restore the LogEvent callback
+	s.LogEvent = logEvent
 
 	// Pre-populate LSM with initial data if configured
 	if s.config.InitialLSMSizeMB > 0 {
@@ -253,6 +255,8 @@ func (s *Simulator) Reset() {
 
 	// Schedule events so simulator is ready to run
 	s.ensureEventsScheduled()
+
+	return nil
 }
 
 // populateInitialLSM pre-populates the LSM tree with data to skip warmup phase
@@ -417,7 +421,9 @@ func (s *Simulator) UpdateConfig(newConfig SimConfig) error {
 
 	if needsReset {
 		fmt.Printf("[CONFIG] Static config changed - resetting simulation (t=%.1f)\n", s.virtualTime)
-		s.Reset()
+		if err := s.Reset(); err != nil {
+			return fmt.Errorf("failed to reset simulation: %w", err)
+		}
 	} else if rateChangedFromZero || trafficModelChanged || trafficDistChanged {
 		// Special case: rate changed from 0 to non-zero or traffic model/distribution changed without reset
 		// Need to kick-start write events

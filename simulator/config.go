@@ -19,8 +19,8 @@ const (
 type TrafficModel int
 
 const (
-	TrafficModelConstant TrafficModel = iota // Constant rate model
-	TrafficModelAdvancedONOFF                // Advanced ON/OFF lognormal model with spikes
+	TrafficModelConstant      TrafficModel = iota // Constant rate model
+	TrafficModelAdvancedONOFF                     // Advanced ON/OFF lognormal model with spikes
 )
 
 // String returns the string representation of TrafficModel
@@ -85,14 +85,15 @@ type TrafficDistributionConfig struct {
 	SpikeAmplitudeMean  float64 `json:"spikeAmplitudeMean"`  // Mean spike amplitude (log space)
 	SpikeAmplitudeSigma float64 `json:"spikeAmplitudeSigma"` // Spike amplitude variance (log space)
 	CapacityLimitMB     float64 `json:"capacityLimitMB"`     // Capacity limit (0 = unlimited)
-	QueueMode           string  `json:"queueMode"`          // "drop" or "queue"
+	QueueMode           string  `json:"queueMode"`           // "drop" or "queue"
 }
 
 // OverlapDistributionConfig holds overlap distribution parameters
 type OverlapDistributionConfig struct {
-	Type            DistributionType `json:"type"`            // Distribution type: Uniform, Exponential, Geometric
-	GeometricP      float64          `json:"geometricP"`      // For Geometric: success probability (default 0.3)
-	ExponentialLambda float64        `json:"exponentialLambda"` // For Exponential: rate parameter (default 0.5)
+	Type              DistributionType `json:"type"`                      // Distribution type: Uniform, Exponential, Geometric, Fixed
+	GeometricP        float64          `json:"geometricP"`                // For Geometric: success probability (default 0.3)
+	ExponentialLambda float64          `json:"exponentialLambda"`         // For Exponential: rate parameter (default 0.5)
+	FixedPercentage   *float64         `json:"fixedPercentage,omitempty"` // For Fixed: percentage of level below that overlaps (0.0 to 1.0, default 0.5). Use pointer to distinguish "not set" from "explicitly set to 0.0"
 }
 
 // String returns the string representation of CompactionStyle
@@ -208,12 +209,12 @@ func DefaultConfig() SimConfig {
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
 		TrafficDistribution: TrafficDistributionConfig{
-			Model:       TrafficModelConstant,
+			Model:         TrafficModelConstant,
 			WriteRateMBps: 10.0,
 		},
 		OverlapDistribution: OverlapDistributionConfig{
-			Type:             DistGeometric,
-			GeometricP:       0.3,
+			Type:              DistGeometric,
+			GeometricP:        0.3,
 			ExponentialLambda: 0.5,
 		},
 	}
@@ -238,19 +239,19 @@ func ThreeLevelConfig() SimConfig {
 		IOThroughputMBps:                 500.0,                    // 500 MB/s throughput
 		NumLevels:                        3,                        // Only 3 levels: Memtable, L0, L1
 		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
-		CompactionStyle:                      CompactionStyleUniversal, // Default to universal
+		CompactionStyle:                  CompactionStyleUniversal, // Default to universal
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
 		TrafficDistribution: TrafficDistributionConfig{
-			Model:       TrafficModelConstant,
+			Model:         TrafficModelConstant,
 			WriteRateMBps: 10.0,
 		},
 		OverlapDistribution: OverlapDistributionConfig{
-			Type:             DistGeometric,
-			GeometricP:       0.3,
+			Type:              DistGeometric,
+			GeometricP:        0.3,
 			ExponentialLambda: 0.5,
 		},
 	}

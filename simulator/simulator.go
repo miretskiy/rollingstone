@@ -29,7 +29,8 @@ type Simulator struct {
 	immutableMemtableSizes  []float64               // Sizes (MB) of immutable memtables waiting to flush
 	compactor               Compactor               // Compaction strategy
 	activeCompactionInfos   []*ActiveCompactionInfo // Detailed info about active compactions
-	pendingCompactions      map[int]*CompactionJob  // Jobs waiting to execute (keyed by fromLevel)
+	pendingCompactions      map[int]*CompactionJob  // Jobs waiting to execute (keyed by compaction ID, not fromLevel)
+	nextCompactionID        int                     // Unique ID for each compaction job
 	stallStartTime          float64                 // When the current stall started (0 if not stalled)
 	stalledWriteBacklog     int                     // Number of writes waiting during stall (for OOM detection)
 	nextFlushCompletionTime float64                 // When the next flush that will clear the stall completes (0 if none scheduled)
@@ -79,6 +80,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		compactor:               compactor,
 		activeCompactionInfos:   make([]*ActiveCompactionInfo, 0),
 		pendingCompactions:      make(map[int]*CompactionJob),
+		nextCompactionID:        1,
 		stallStartTime:          0,
 		stalledWriteBacklog:     0,
 		nextFlushCompletionTime: 0,
@@ -93,6 +95,23 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 // ensureEventsScheduled ensures the simulation has the necessary recurring events
 // Called internally after reset or when starting/resuming
 func (s *Simulator) ensureEventsScheduled() {
+	// CRITICAL: Before clearing the queue, save any pending flush events for immutable memtables
+	// This prevents losing flush events when re-scheduling (e.g., when traffic model changes)
+	pendingFlushSizes := make([]float64, 0)
+	if s.numImmutableMemtables > 0 {
+		// Find all flush events in the queue and save their sizes
+		// We'll re-schedule them after clearing the queue
+		for _, event := range s.queue.Events() {
+			if flushEvent, ok := event.(*FlushEvent); ok {
+				pendingFlushSizes = append(pendingFlushSizes, flushEvent.SizeMB())
+			}
+		}
+		// If we have immutable memtables but no flush events in queue, use the tracked sizes
+		if len(pendingFlushSizes) == 0 && len(s.immutableMemtableSizes) > 0 {
+			pendingFlushSizes = append([]float64(nil), s.immutableMemtableSizes...)
+		}
+	}
+
 	// Clear the queue and schedule fresh events
 	// This is simple, correct, and not performance-critical (called rarely)
 	s.queue.Clear()
@@ -103,6 +122,36 @@ func (s *Simulator) ensureEventsScheduled() {
 	// Initialize time tracking for advanced traffic distribution
 	if advDist, ok := s.trafficDistribution.(*AdvancedTrafficDistribution); ok {
 		advDist.UpdateTime(s.virtualTime)
+	}
+
+	// Re-schedule flush events for existing immutable memtables
+	// This ensures flushes aren't lost when re-scheduling events
+	// Only re-schedule as many as we have immutable memtables (safety check)
+	maxFlushes := s.numImmutableMemtables
+	if maxFlushes > len(pendingFlushSizes) {
+		maxFlushes = len(pendingFlushSizes)
+	}
+	for i := 0; i < maxFlushes && i < len(pendingFlushSizes); i++ {
+		sizeMB := pendingFlushSizes[i]
+		if sizeMB > 0 {
+			// Calculate flush duration
+			ioTimeSec := sizeMB / s.config.IOThroughputMBps
+			seekTimeSec := s.config.IOLatencyMs / 1000.0
+			flushDuration := ioTimeSec + seekTimeSec
+
+			// Flush can only start when disk is free
+			flushStartTime := max(s.virtualTime, s.diskBusyUntil)
+			flushCompleteTime := flushStartTime + flushDuration
+
+			// Reserve disk bandwidth
+			s.diskBusyUntil = flushCompleteTime
+
+			// Track this write as in-progress for throughput calculation
+			s.metrics.StartWrite(sizeMB, sizeMB, flushStartTime, flushCompleteTime, -1, 0)
+
+			// Schedule flush event
+			s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
+		}
 	}
 
 	// Schedule write scheduler event (if rate > 0)
@@ -780,17 +829,18 @@ func (s *Simulator) processFlush(event *FlushEvent) {
 
 // processCompaction processes a compaction event
 func (s *Simulator) processCompaction(event *CompactionEvent) {
+	compactionID := event.CompactionID()
 	fromLevel := event.FromLevel()
 
 	// Compactor handles activeCompactions tracking (cleared in ExecuteCompaction)
 
-	// Retrieve the compaction job
-	job, ok := s.pendingCompactions[fromLevel]
+	// Retrieve the compaction job using compaction ID
+	job, ok := s.pendingCompactions[compactionID]
 	if !ok {
-		fmt.Printf("[ERROR] No pending compaction job for L%d\n", fromLevel)
+		fmt.Printf("[ERROR] No pending compaction job for ID %d (L%d→L%d)\n", compactionID, fromLevel, event.ToLevel())
 		return
 	}
-	delete(s.pendingCompactions, fromLevel)
+	delete(s.pendingCompactions, compactionID)
 
 	// Remove from activeCompactionInfos
 	newInfos := make([]*ActiveCompactionInfo, 0, len(s.activeCompactionInfos)-1)
@@ -1029,8 +1079,13 @@ func (s *Simulator) tryScheduleCompaction() bool {
 		s.lsm.Levels[job.ToLevel].TargetCompactingFiles += len(job.TargetFiles)
 	}
 
-	// Store the job so we can execute it when the event fires
-	s.pendingCompactions[job.FromLevel] = job
+	// Assign unique compaction ID
+	compactionID := s.nextCompactionID
+	s.nextCompactionID++
+	job.ID = compactionID
+
+	// Store the job so we can execute it when the event fires (keyed by compaction ID, not fromLevel)
+	s.pendingCompactions[compactionID] = job
 
 	// Track this write as in-progress for throughput calculation
 	s.metrics.StartWrite(inputSize, outputSize, compactionStartTime, compactionCompleteTime, job.FromLevel, job.ToLevel)
@@ -1038,9 +1093,9 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	// Schedule compaction event (with subcompaction count if applicable)
 	var compactionEvent *CompactionEvent
 	if len(job.Subcompactions) > 0 {
-		compactionEvent = NewCompactionEventWithSubcompactions(compactionCompleteTime, compactionStartTime, job.FromLevel, job.ToLevel, inputSize, outputSize, len(job.Subcompactions))
+		compactionEvent = NewCompactionEventWithSubcompactions(compactionCompleteTime, compactionStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize, len(job.Subcompactions))
 	} else {
-		compactionEvent = NewCompactionEvent(compactionCompleteTime, compactionStartTime, job.FromLevel, job.ToLevel, inputSize, outputSize)
+		compactionEvent = NewCompactionEvent(compactionCompleteTime, compactionStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize)
 	}
 	s.queue.Push(compactionEvent)
 

@@ -24,6 +24,7 @@ type Compactor interface {
 
 // CompactionJob describes a compaction operation
 type CompactionJob struct {
+	ID          int          // Unique ID for this compaction job (assigned by simulator)
 	FromLevel   int
 	ToLevel     int
 	SourceFiles []*SSTFile // Files to compact from source level
@@ -84,7 +85,16 @@ func pickOverlapCount(maxFiles int, dist filePicker) int {
 	if maxFiles == 0 {
 		return 0
 	}
-	return dist.Pick(1, maxFiles)
+	result := dist.Pick(1, maxFiles)
+	// Allow 0 result for fixed distribution with 0.0 percentage (trivial moves only)
+	if result == 0 {
+		return 0
+	}
+	// Ensure at least 1 overlap for other distributions
+	if result < 1 {
+		return 1
+	}
+	return result
 }
 
 // selectFiles picks first N files from the level (simulates oldest-first or round-robin)

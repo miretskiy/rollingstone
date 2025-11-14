@@ -14,6 +14,7 @@ const (
 	DistUniform DistributionType = iota
 	DistExponential
 	DistGeometric
+	DistFixed
 )
 
 // String returns the string representation of DistributionType
@@ -25,6 +26,8 @@ func (dt DistributionType) String() string {
 		return "exponential"
 	case DistGeometric:
 		return "geometric"
+	case DistFixed:
+		return "fixed"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(dt))
 	}
@@ -39,8 +42,10 @@ func ParseDistributionType(s string) (DistributionType, error) {
 		return DistExponential, nil
 	case "geometric":
 		return DistGeometric, nil
+	case "fixed":
+		return DistFixed, nil
 	default:
-		return DistGeometric, fmt.Errorf("invalid DistributionType: %s (must be 'uniform', 'exponential', or 'geometric')", s)
+		return DistGeometric, fmt.Errorf("invalid DistributionType: %s (must be 'uniform', 'exponential', 'geometric', or 'fixed')", s)
 	}
 }
 
@@ -149,6 +154,54 @@ func (d *GeometricDistribution) Sample(rng *rand.Rand, min, max int) int {
 	return min + trials
 }
 
+// FixedDistribution samples a fixed percentage of the range
+type FixedDistribution struct {
+	Percentage float64 // Percentage of range to use (0.0 to 1.0)
+}
+
+func (d *FixedDistribution) Sample(rng *rand.Rand, min, max int) int {
+	if min >= max {
+		return min
+	}
+
+	// Clamp percentage to [0.0, 1.0]
+	percentage := d.Percentage
+	if percentage < 0.0 {
+		percentage = 0.0
+	}
+	if percentage > 1.0 {
+		percentage = 1.0
+	}
+
+	// Handle extremes explicitly
+	if percentage == 0.0 {
+		// For 0.0, return 0 (no overlaps, trivial moves only)
+		// Note: This allows returning 0 even though min might be 1
+		// The caller (pickOverlapCount) will handle this correctly
+		return 0
+	}
+	if percentage == 1.0 {
+		return max // All overlaps
+	}
+
+	// Calculate fixed position in range
+	// For percentage p, we want: min + p * (max - min)
+	// This gives us a value between min and max
+	range_ := float64(max - min)
+	offset := percentage * range_
+	result := min + int(offset)
+
+	// Ensure result is within bounds (handle floating point precision)
+	if result < min {
+		return min
+	}
+	if result > max {
+		return max
+	}
+
+	return result
+}
+
 // NewDistribution creates a distribution based on type
 func NewDistribution(distType DistributionType) Distribution {
 	switch distType {
@@ -158,6 +211,8 @@ func NewDistribution(distType DistributionType) Distribution {
 		return &ExponentialDistribution{Lambda: 0.5}
 	case DistGeometric:
 		return &GeometricDistribution{P: 0.3}
+	case DistFixed:
+		return &FixedDistribution{Percentage: 0.5} // Default 50%
 	default:
 		return &UniformDistribution{}
 	}
@@ -179,8 +234,25 @@ func (da *distributionAdapter) Pick(min, max int) int {
 }
 
 func newDistributionAdapter(distType DistributionType) filePicker {
+	// NOTE: This function is deprecated - use newDistributionAdapterWithSeed instead
+	// This creates a random source without a seed, breaking reproducibility
+	// Kept for backward compatibility but should not be used
 	return &distributionAdapter{
 		dist: NewDistribution(distType),
-		rng:  rand.New(rand.NewSource(rand.Int63())), // Could be injected for testing
+		rng:  rand.New(rand.NewSource(rand.Int63())), // BUG: Not using seed - breaks reproducibility
+	}
+}
+
+// newDistributionAdapterWithSeed creates a distribution adapter with a specific seed
+func newDistributionAdapterWithSeed(distType DistributionType, seed int64) filePicker {
+	var rng *rand.Rand
+	if seed == 0 {
+		rng = rand.New(rand.NewSource(rand.Int63())) // Use random seed if 0
+	} else {
+		rng = rand.New(rand.NewSource(seed))
+	}
+	return &distributionAdapter{
+		dist: NewDistribution(distType),
+		rng:  rng,
 	}
 }

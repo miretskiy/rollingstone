@@ -133,6 +133,7 @@ const defaultConfig: SimulationConfig = {
         type: 'geometric',
         geometricP: 0.3,
         exponentialLambda: 0.5,
+        fixedPercentage: 0.5,
     },
 };
 
@@ -291,21 +292,21 @@ export const useStore = create<AppStore>((set, get) => ({
             }
             
             if (configUpdate.overlapDistribution) {
-                const currentOverlap = currentConfig.overlapDistribution || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                const currentOverlap = currentConfig.overlapDistribution || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5, fixedPercentage: 0.5 };
                 const updateOverlap = configUpdate.overlapDistribution;
                 
                 console.log('[Store] Merging overlapDistribution - current:', currentOverlap, 'update:', updateOverlap);
                 
                 // Validate type
-                if (updateOverlap.type && !['uniform', 'exponential', 'geometric'].includes(updateOverlap.type)) {
-                    throw new Error(`Invalid overlapDistribution.type: ${updateOverlap.type}. Must be 'uniform', 'exponential', or 'geometric'`);
+                if (updateOverlap.type && !['uniform', 'exponential', 'geometric', 'fixed'].includes(updateOverlap.type)) {
+                    throw new Error(`Invalid overlapDistribution.type: ${updateOverlap.type}. Must be 'uniform', 'exponential', 'geometric', or 'fixed'`);
                 }
                 
                 newConfig.overlapDistribution = {
                     ...currentOverlap,
                     ...updateOverlap,
                     // Ensure type is always set
-                    type: (updateOverlap.type || currentOverlap.type || 'geometric') as "uniform" | "exponential" | "geometric",
+                    type: (updateOverlap.type || currentOverlap.type || 'geometric') as "uniform" | "exponential" | "geometric" | "fixed",
                 };
                 
                 console.log('[Store] Merged overlapDistribution:', newConfig.overlapDistribution);

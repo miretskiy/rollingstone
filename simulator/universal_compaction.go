@@ -84,14 +84,29 @@ func NewUniversalCompactorWithOverlapDist(seed int64, overlapConfig OverlapDistr
 		overlapDist = &ExponentialDistribution{Lambda: overlapConfig.ExponentialLambda}
 	case DistGeometric:
 		overlapDist = &GeometricDistribution{P: overlapConfig.GeometricP}
+	case DistFixed:
+		percentage := 0.5 // Default value
+		if overlapConfig.FixedPercentage != nil {
+			percentage = *overlapConfig.FixedPercentage
+		}
+		// Clamp to [0.0, 1.0] - allow 0.0 and 1.0 as valid extremes
+		if percentage < 0.0 {
+			percentage = 0.0
+		}
+		if percentage > 1.0 {
+			percentage = 1.0
+		}
+		overlapDist = &FixedDistribution{Percentage: percentage}
 	default: // DistUniform
 		overlapDist = &UniformDistribution{}
 	}
 
+	// Use different seeds for each distribution to avoid correlation
+	// Derive seeds from base seed: fileSelect uses seed+1, sortedRun uses seed+2, overlap uses seed+0
 	return &UniversalCompactor{
-		fileSelectDist:      newDistributionAdapter(DistGeometric), // Favor picking fewer files
-		overlapSelectDist:   &distributionAdapter{dist: overlapDist, rng: rng},
-		sortedRunSelectDist: newDistributionAdapter(DistGeometric), // Favor picking fewer sorted runs
+		fileSelectDist:      newDistributionAdapterWithSeed(DistGeometric, seed+1), // Favor picking fewer files, use seed+1 for reproducibility
+		overlapSelectDist:   &distributionAdapter{dist: overlapDist, rng: rng},     // Uses seed (seed+0)
+		sortedRunSelectDist: newDistributionAdapterWithSeed(DistGeometric, seed+2), // Favor picking fewer sorted runs, use seed+2 for reproducibility
 		rng:                 rng,
 		activeCompactions:   make(map[int]bool),
 	}

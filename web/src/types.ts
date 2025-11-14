@@ -19,9 +19,10 @@ export interface TrafficDistributionConfig {
 }
 
 export interface OverlapDistributionConfig {
-    type: "uniform" | "exponential" | "geometric";
+    type: "uniform" | "exponential" | "geometric" | "fixed";
     geometricP?: number;
     exponentialLambda?: number;
+    fixedPercentage?: number; // For fixed: percentage of level below that overlaps (0.0 to 1.0)
 }
 
 // Message types for WebSocket communication

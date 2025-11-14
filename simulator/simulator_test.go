@@ -188,13 +188,18 @@ func TestSimulator_Step4_PendingCompactionsStored(t *testing.T) {
 	scheduled := sim.tryScheduleCompaction()
 	require.True(t, scheduled, "Should schedule compaction")
 
-	// Verify job is stored in pendingCompactions keyed by FromLevel
+	// Verify job is stored in pendingCompactions keyed by compaction ID
 	require.Greater(t, len(sim.pendingCompactions), 0, "Should have pending compaction job")
 
-	// Find the job (should be keyed by FromLevel = 0 for L0 compaction)
-	job, exists := sim.pendingCompactions[0]
-	require.True(t, exists, "Should have pending compaction job for L0")
-	require.NotNil(t, job, "Job should not be nil")
+	// Find the job (iterate through pendingCompactions to find L0 compaction)
+	var job *CompactionJob
+	for _, j := range sim.pendingCompactions {
+		if j.FromLevel == 0 {
+			job = j
+			break
+		}
+	}
+	require.NotNil(t, job, "Should have pending compaction job for L0")
 	require.Equal(t, 0, job.FromLevel, "FromLevel should be 0")
 	require.Greater(t, len(job.SourceFiles), 0, "Should have source files")
 }
@@ -230,18 +235,25 @@ func TestSimulator_Step5_ProcessCompactionExecutesJob(t *testing.T) {
 	scheduled := sim.tryScheduleCompaction()
 	require.True(t, scheduled, "Should schedule compaction")
 
-	job, exists := sim.pendingCompactions[0]
-	require.True(t, exists, "Should have pending compaction job")
+	// Find the job (iterate through pendingCompactions to find L0 compaction)
+	var job *CompactionJob
+	for _, j := range sim.pendingCompactions {
+		if j.FromLevel == 0 {
+			job = j
+			break
+		}
+	}
+	require.NotNil(t, job, "Should have pending compaction job")
 	require.Equal(t, 0, job.FromLevel, "FromLevel should be 0")
 
 	// Create compaction event matching the job
-	event := NewCompactionEvent(1.0, 0.0, job.FromLevel, job.ToLevel, 192.0, 172.8)
+	event := NewCompactionEvent(1.0, 0.0, job.ID, job.FromLevel, job.ToLevel, 192.0, 172.8)
 
 	// Process compaction event
 	sim.processCompaction(event)
 
 	// Verify job was removed from pendingCompactions
-	_, exists = sim.pendingCompactions[0]
+	_, exists := sim.pendingCompactions[job.ID]
 	require.False(t, exists, "Pending compaction job should be removed after processing")
 
 	// Verify activeCompactions was cleared
@@ -946,10 +958,17 @@ func TestSimulator_Step25_Integration_CompactionCompletes_FreesSlot(t *testing.T
 	require.False(t, scheduled2, "Second compaction should not schedule (slot taken)")
 
 	// Complete first compaction
-	job, exists := sim.pendingCompactions[0]
-	require.True(t, exists, "Should have pending compaction job")
+	// Find the job (iterate through pendingCompactions to find L0 compaction)
+	var job *CompactionJob
+	for _, j := range sim.pendingCompactions {
+		if j.FromLevel == 0 {
+			job = j
+			break
+		}
+	}
+	require.NotNil(t, job, "Should have pending compaction job")
 
-	compactionEvent := NewCompactionEvent(1.0, 0.0, job.FromLevel, job.ToLevel, 192.0, 172.8)
+	compactionEvent := NewCompactionEvent(1.0, 0.0, job.ID, job.FromLevel, job.ToLevel, 192.0, 172.8)
 	sim.processCompaction(compactionEvent)
 
 	// Verify slot freed

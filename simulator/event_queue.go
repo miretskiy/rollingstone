@@ -78,6 +78,14 @@ func (eq *EventQueue) FindNextFlushEvent() *FlushEvent {
 	return earliestFlush
 }
 
+// Events returns all events in the queue (for inspection/debugging)
+// Note: This returns a copy of the events slice to prevent external modification
+func (eq *EventQueue) Events() []Event {
+	events := make([]Event, len(eq.events))
+	copy(events, eq.events)
+	return events
+}
+
 // eventHeap implements heap.Interface for Event
 type eventHeap []Event
 

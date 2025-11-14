@@ -82,7 +82,7 @@ export function SimulationControls() {
   const levelCompactionDynamicLevelBytes = useStore(state => state.config.levelCompactionDynamicLevelBytes) || false;
   const trafficModel = useStore(state => state.config.trafficDistribution?.model) || 'constant';
   const overlapDistTypeRaw = useStore(state => state.config.overlapDistribution?.type);
-  const overlapDistType = (overlapDistTypeRaw === 'uniform' || overlapDistTypeRaw === 'exponential' || overlapDistTypeRaw === 'geometric') 
+  const overlapDistType = (overlapDistTypeRaw === 'uniform' || overlapDistTypeRaw === 'exponential' || overlapDistTypeRaw === 'geometric' || overlapDistTypeRaw === 'fixed') 
     ? overlapDistTypeRaw 
     : 'geometric'; // Default to geometric if invalid or missing
   
@@ -105,6 +105,7 @@ export function SimulationControls() {
   const overlapDist = useStore(state => state.config.overlapDistribution);
   const geometricP = overlapDist?.geometricP || 0.3;
   const exponentialLambda = overlapDist?.exponentialLambda || 0.5;
+  const fixedPercentage = overlapDist?.fixedPercentage ?? 0.5; // Default to 0.5 if not set
   
   // Calculate max sustainable rate from config OR from actual metrics if available
   // Use actual metrics if simulation is running and has data, otherwise use theoretical estimate
@@ -551,18 +552,19 @@ export function SimulationControls() {
                     onChange={(e) => {
                       try {
                         if (!isConnected || isRunning) return;
-                        const newType = e.target.value as "uniform" | "exponential" | "geometric";
+                        const newType = e.target.value as "uniform" | "exponential" | "geometric" | "fixed";
                         console.log('[OverlapDist] Changing type to:', newType, 'current overlapDist:', overlapDist);
                         
                         // Ensure we have a valid overlapDist object with all required fields
-                        const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                        const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5, fixedPercentage: 0.5 };
                         
                         // Create new overlap distribution config
-                        const newOverlapDist: { type: "uniform" | "exponential" | "geometric"; geometricP?: number; exponentialLambda?: number } = {
+                        const newOverlapDist: { type: "uniform" | "exponential" | "geometric" | "fixed"; geometricP?: number; exponentialLambda?: number; fixedPercentage?: number } = {
                           type: newType,
                           // Preserve existing parameters (they're optional, so only include if they exist)
                           ...(currentOverlapDist.geometricP !== undefined && { geometricP: currentOverlapDist.geometricP }),
                           ...(currentOverlapDist.exponentialLambda !== undefined && { exponentialLambda: currentOverlapDist.exponentialLambda }),
+                          ...(currentOverlapDist.fixedPercentage !== undefined && { fixedPercentage: currentOverlapDist.fixedPercentage }),
                         };
                         
                         // Ensure defaults are set for the selected type
@@ -571,6 +573,9 @@ export function SimulationControls() {
                         }
                         if (newType === 'exponential' && newOverlapDist.exponentialLambda === undefined) {
                           newOverlapDist.exponentialLambda = 0.5;
+                        }
+                        if (newType === 'fixed' && newOverlapDist.fixedPercentage === undefined) {
+                          newOverlapDist.fixedPercentage = 0.5;
                         }
                         
                         console.log('[OverlapDist] New config:', newOverlapDist);
@@ -589,6 +594,7 @@ export function SimulationControls() {
                     <option value="uniform">Uniform</option>
                     <option value="exponential">Exponential</option>
                     <option value="geometric">Geometric</option>
+                    <option value="fixed">Fixed</option>
                   </select>
                   {overlapDistType === 'geometric' && (
                     <>
@@ -659,6 +665,43 @@ export function SimulationControls() {
                         }}
                         min={0.1}
                         max={2.0}
+                        disabled={!isConnected || isRunning}
+                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      />
+                    </>
+                  )}
+                  {overlapDistType === 'fixed' && (
+                    <>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">
+                        Percentage:
+                        <div className="group relative">
+                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                            Fixed percentage of files from the target level that overlap. 0.0 = no overlaps (trivial moves only), 1.0 = all files overlap, 0.5 = 50% of files overlap. This provides deterministic overlap selection instead of probabilistic distributions.
+                          </div>
+                        </div>
+                      </label>
+                      <NumberInput
+                        value={fixedPercentage}
+                        onChange={(val) => {
+                          try {
+                            const currentOverlapDist = overlapDist || { type: 'fixed', fixedPercentage: 0.5 };
+                            const clampedVal = Math.max(0.0, Math.min(1.0, val));
+                            console.log('[OverlapDist] Updating fixedPercentage to:', clampedVal);
+                            updateConfig({
+                              overlapDistribution: {
+                                ...currentOverlapDist,
+                                type: 'fixed',
+                                fixedPercentage: clampedVal,
+                              }
+                            });
+                          } catch (error) {
+                            console.error('[OverlapDist] Error updating fixedPercentage:', error);
+                            alert(`Error updating percentage: ${error instanceof Error ? error.message : String(error)}`);
+                          }
+                        }}
+                        min={0.0}
+                        max={1.0}
                         disabled={!isConnected || isRunning}
                         className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                       />

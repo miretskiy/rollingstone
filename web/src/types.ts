@@ -50,6 +50,9 @@ export interface SimulationConfig {
     compactionStyle?: "leveled" | "universal"; // Compaction strategy (default "universal")
     maxSizeAmplificationPercent?: number; // max_size_amplification_percent for universal compaction (default 200%)
     levelCompactionDynamicLevelBytes?: boolean; // level_compaction_dynamic_level_bytes for leveled compaction (default false)
+    enableWAL?: boolean; // Enable Write-Ahead Log (default true)
+    walSync?: boolean; // Sync WAL after each write (default true)
+    walSyncLatencyMs?: number; // fsync() latency in milliseconds (default 1.5ms)
     trafficDistribution?: TrafficDistributionConfig;
     overlapDistribution?: OverlapDistributionConfig;
 }
@@ -70,6 +73,7 @@ export interface SimulationMetrics {
     readLatencyMs: number;
     totalDataWrittenMB: number;
     totalDataReadMB: number;
+    walBytesWritten: number;
     spaceAmplification: number;
     flushThroughputMBps: number;
     compactionThroughputMBps: number;
@@ -77,7 +81,10 @@ export interface SimulationMetrics {
     perLevelThroughputMBps: Record<number, number>;
     maxSustainableWriteRateMBps?: number; // Maximum sustainable write rate (conservative estimate)
     minSustainableWriteRateMBps?: number; // Minimum sustainable write rate (worst-case estimate)
+    lastCompactionDurationSec?: number; // Duration of most recent compaction in seconds
+    lastCompactionThroughputMBps?: number; // Throughput of most recent compaction (input MB / duration)
     compactionsSinceUpdate?: Record<number, CompactionStats>; // Per-level aggregate compaction activity
+    diskUtilizationPercent?: number; // Percentage of disk bandwidth used (0-100%)
     inProgressCount?: number;
     inProgressDetails?: Array<{
         inputMB: number;

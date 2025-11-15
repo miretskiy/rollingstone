@@ -99,6 +99,10 @@ export function SimulationControls() {
   const spikeAmplitudeMean = trafficDist?.spikeAmplitudeMean || 1.0;
   const spikeAmplitudeSigma = trafficDist?.spikeAmplitudeSigma || 0.5;
   const capacityLimitMB = trafficDist?.capacityLimitMB || 0;
+
+  // WAL configuration (must be at top level for hooks)
+  const enableWAL = useStore(state => state.config.enableWAL ?? true);
+  const walSync = useStore(state => state.config.walSync ?? true);
   const queueMode = trafficDist?.queueMode || 'drop';
   
   // Extract all overlap distribution values
@@ -1114,6 +1118,71 @@ export function SimulationControls() {
                   tooltip="Disk operation latency" />
                 <ConfigInput label="I/O Throughput" field="ioThroughputMBps" min={10} max={10000} unit="MB/s"
                   tooltip="Max disk bandwidth (shared by all operations)" />
+              </div>
+
+              {/* WAL Configuration */}
+              <div className="mt-4 pt-4 border-t border-dark-border">
+                <h4 className="text-xs font-semibold text-gray-400 uppercase mb-3">Write-Ahead Log (WAL)</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="enableWAL"
+                      checked={enableWAL}
+                      onChange={(e) => {
+                        if (!isConnected || isRunning) return;
+                        updateConfig({ enableWAL: e.target.checked });
+                      }}
+                      disabled={!isConnected || isRunning}
+                      className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-primary-500 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="enableWAL" className="text-sm text-gray-300 flex items-center gap-1 cursor-pointer">
+                      Enable WAL
+                      <div className="group relative">
+                        <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                        <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                          Enable Write-Ahead Log for durability (RocksDB default: true). WAL writes occur before memtable inserts and affect disk I/O contention, but are NOT included in write amplification calculations.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="walSync"
+                      checked={walSync}
+                      onChange={(e) => {
+                        if (!isConnected || isRunning || !enableWAL) return;
+                        updateConfig({ walSync: e.target.checked });
+                      }}
+                      disabled={!enableWAL || !isConnected || isRunning}
+                      className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-primary-500 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="walSync" className="text-sm text-gray-300 flex items-center gap-1 cursor-pointer">
+                      WAL Sync
+                      <div className="group relative">
+                        <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                        <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                          Sync WAL after each write with fsync() (RocksDB default: false). When enabled, adds sync latency but guarantees durability on machine crashes.
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {walSync && (
+                    <div className="ml-6">
+                      <ConfigInput
+                        label="WAL Sync Latency"
+                        field="walSyncLatencyMs"
+                        min={0.1}
+                        max={50}
+                        unit="ms"
+                        disabled={!enableWAL}
+                        tooltip="fsync() latency in milliseconds (default: 1.5ms for NVMe/SSD)" />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

@@ -125,6 +125,9 @@ const defaultConfig: SimulationConfig = {
     compactionStyle: 'universal', // Default to universal compaction
     maxSizeAmplificationPercent: 200, // Default RocksDB value
     levelCompactionDynamicLevelBytes: false, // Default false when compactionStyle is universal
+    enableWAL: true, // Enable Write-Ahead Log (RocksDB default: disableWAL=false)
+    walSync: false, // Sync WAL after each write (RocksDB default: sync=false)
+    walSyncLatencyMs: 1.5, // fsync() latency in milliseconds (typical for NVMe/SSD)
     trafficDistribution: {
         model: 'constant',
         writeRateMBps: 10.0,

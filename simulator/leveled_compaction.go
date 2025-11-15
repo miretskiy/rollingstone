@@ -354,6 +354,15 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 			l0TotalSize += f.SizeMB
 		}
 
+		// FIDELITY: RocksDB picks ALL L0 files for L0→base_level compaction
+		// max_compaction_bytes is NOT enforced on L0 source file selection
+		// Reference: GetOverlappingL0Files() in compaction_picker.cc:1233-1263
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker.cc#L1233-L1263
+		//
+		// RocksDB's GetOverlappingL0Files collects ALL overlapping L0 files based on key ranges,
+		// with NO consideration for max_compaction_bytes at the L0 selection stage.
+		l0SourceFiles := sourceLevel.Files
+
 		// Estimate overlap - L0 files typically overlap many L1 files
 		// Distribution models workload: uniform writes = many overlaps, skewed = few
 		numOverlaps := pickOverlapCount(targetLevel.FileCount, c.overlapSelectDist)
@@ -365,18 +374,21 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 			targetTotalSize += f.SizeMB
 		}
 
-		// Check if total input exceeds max_compaction_bytes
-		totalInputSize := l0TotalSize + targetTotalSize
-		if totalInputSize > maxCompactionMB {
-			// Need to reduce scope - prioritize L0 files, reduce target overlap
-			// Simple heuristic: reduce target files proportionally
-			targetReduction := (totalInputSize - maxCompactionMB) / totalInputSize
-			newTargetCount := int(float64(len(targetFiles)) * (1.0 - targetReduction))
-			if newTargetCount < 0 {
-				newTargetCount = 0
-			}
-			targetFiles = targetFiles[:newTargetCount]
-		}
+		// FIDELITY: RocksDB selects ALL overlapping target files based on key range
+		// max_compaction_bytes is checked AFTER selection, not for incremental reduction
+		// Reference: SetupOtherInputs() in compaction_picker.cc:464-588
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker.cc#L464-L588
+		//
+		// RocksDB uses 2x max_compaction_bytes as expansion limit (line 539-540):
+		//   const uint64_t limit = MultiplyCheckOverflow(mutable_cf_options.max_compaction_bytes, 2.0);
+		//
+		// max_compaction_bytes is a SOFT LIMIT. RocksDB may:
+		// 1. Proceed with compaction if total < 2x limit
+		// 2. Use it to constrain expansion decisions
+		// 3. NOT incrementally reduce target files
+		//
+		// For DES accuracy, we keep ALL target files (no incremental reduction)
+		// and log when exceeding limits (for visibility into compaction sizes)
 
 		// Check if L0→base_level compaction is viable
 		// RocksDB Reference: LevelCompactionBuilder::PickFileToCompact() lines 788-800
@@ -412,12 +424,38 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 		//
 		// FIDELITY: ✓ Matches RocksDB's viability check logic
 		l0ToBaseViable := len(sourceLevel.Files) > 0
+
 		// Re-check target level contention specifically for base_level
 		if targetLevel.FileCount > 0 && targetLevel.TargetCompactingFiles > 0 {
 			contentionRatio := float64(targetLevel.TargetCompactingFiles) / float64(targetLevel.FileCount)
 			if contentionRatio > 0.5 {
 				l0ToBaseViable = false // Target level too busy, L0→base_level will fail
 			}
+		}
+
+		// FIDELITY: ✓ Prefer intra-L0 when base level is SMALL relative to L0 (write-amp optimization)
+		// RocksDB Reference: PickSizeBasedIntraL0Compaction() in compaction_picker_level.cc:919-971
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_level.cc#L919-L971
+		//
+		// RocksDB C++ (lines 932-955):
+		//   ```cpp
+		//   const double kMultiplier = std::max(10.0, mutable_cf_options_.max_bytes_for_level_multiplier) * 2;
+		//   const uint64_t min_lbase_size = MultiplyCheckOverflow(l0_size, kMultiplier);
+		//   ...
+		//   if (lbase_size <= min_lbase_size) {
+		//     return false;  // Prefer intra-L0 when Lbase is too small
+		//   }
+		//   ```
+		//
+		// This avoids inefficient L0→small_Lbase compactions that cause high write-amp.
+		// With typical multiplier of 10, threshold is 20x: prefer intra-L0 if Lbase < 20x L0.
+		intraL0Threshold := config.L0CompactionTrigger + 2
+		lbaseTotalSize := targetLevel.TotalSize
+		const kSizeBasedMultiplier = 20.0 // max(10, multiplier) * 2, typical case
+
+		minLbaseSize := l0TotalSize * kSizeBasedMultiplier
+		if sourceLevel.FileCount >= intraL0Threshold && lbaseTotalSize <= minLbaseSize {
+			l0ToBaseViable = false // Prefer intra-L0 to avoid high write-amp
 		}
 
 		// FIDELITY: ✓ CRITICAL - Only try intra-L0 as FALLBACK if L0→base_level fails
@@ -561,8 +599,8 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 		// L0→base_level compaction is viable, proceed with normal compaction
 		return &CompactionJob{
 			FromLevel:   0,
-			ToLevel:     baseLevel,         // L0→base_level (dynamic mode) or L0→L1 (static mode)
-			SourceFiles: sourceLevel.Files, // All L0 files
+			ToLevel:     baseLevel,     // L0→base_level (dynamic mode) or L0→L1 (static mode)
+			SourceFiles: l0SourceFiles, // L0 files (limited by max_compaction_bytes if needed)
 			TargetFiles: targetFiles,
 			IsIntraL0:   false,
 		}

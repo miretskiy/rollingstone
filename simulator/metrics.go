@@ -36,6 +36,7 @@ type Metrics struct {
 	// Cumulative counters
 	TotalDataWrittenMB float64 `json:"totalDataWrittenMB"` // User writes
 	TotalDataReadMB    float64 `json:"totalDataReadMB"`    // User reads (future)
+	WALBytesWritten    float64 `json:"walBytesWritten"`    // Total bytes written to WAL
 
 	// Throughput tracking (MB/s) - smoothed via exponential moving average
 	FlushThroughputMBps         float64         `json:"flushThroughputMBps"`         // Memtable flush rate (smoothed)
@@ -44,6 +45,13 @@ type Metrics struct {
 	PerLevelThroughputMBps      map[int]float64 `json:"perLevelThroughputMBps"`      // Per-level compaction rates (smoothed)
 	MaxSustainableWriteRateMBps float64         `json:"maxSustainableWriteRateMBps"` // Maximum sustainable write rate (conservative estimate based on average overhead)
 	MinSustainableWriteRateMBps float64         `json:"minSustainableWriteRateMBps"` // Minimum sustainable write rate (worst-case based on buffer capacity)
+
+	// Last compaction performance (for observing WAL/disk contention impact)
+	LastCompactionDurationSec    float64 `json:"lastCompactionDurationSec"`    // Duration of most recent compaction in seconds
+	LastCompactionThroughputMBps float64 `json:"lastCompactionThroughputMBps"` // Throughput of most recent compaction (input MB / duration)
+
+	// Disk utilization (for observing WAL baseline overhead)
+	DiskUtilizationPercent float64 `json:"diskUtilizationPercent"` // Percentage of disk bandwidth used (0-100%)
 
 	// In-progress activities (for UI display)
 	InProgressCount   int                      `json:"inProgressCount"`   // Number of ongoing writes
@@ -85,12 +93,14 @@ func NewMetrics() *Metrics {
 		ReadLatencyMs:               0,
 		TotalDataWrittenMB:          0,
 		TotalDataReadMB:             0,
+		WALBytesWritten:             0,
 		FlushThroughputMBps:         0,
 		CompactionThroughputMBps:    0,
 		TotalWriteThroughputMBps:    0,
 		PerLevelThroughputMBps:      make(map[int]float64),
 		MaxSustainableWriteRateMBps: 0,
 		MinSustainableWriteRateMBps: 0,
+		DiskUtilizationPercent:      0,
 		CompactionsSinceUpdate:      make(map[int]CompactionStats),
 		totalDiskWrittenMB:          0,
 		totalFlushWrittenMB:         0,
@@ -144,6 +154,19 @@ func (m *Metrics) GetInProgressWrites() []WriteActivity {
 func (m *Metrics) RecordUserWrite(sizeMB float64) {
 	m.TotalDataWrittenMB += sizeMB
 	m.logicalDataSizeMB += sizeMB
+}
+
+// RecordWALWrite records a WAL write operation (for disk throughput/utilization tracking)
+// WAL writes use Level = -2 to distinguish from flush (-1) and compactions (0+)
+func (m *Metrics) RecordWALWrite(startTime, endTime, sizeMB float64) {
+	m.recentWrites = append(m.recentWrites, WriteActivity{
+		StartTime: startTime,
+		EndTime:   endTime,
+		SizeMB:    sizeMB,
+		InputMB:   0, // WAL is write-only, no input
+		Level:     -2, // Special marker for WAL writes
+		ToLevel:   -2,
+	})
 }
 
 // RecordFlush records a memtable flush (writes to disk)
@@ -354,7 +377,7 @@ func (m *Metrics) calculateThroughput() {
 	// Calculate instantaneous throughput
 	// CRITICAL FIX: Compactions are serialized via diskBusyUntil, so we can only count
 	// compactions that are ACTUALLY executing (not waiting). Find the active compaction.
-	var flushBandwidth, compactionBandwidth float64
+	var walBandwidth, flushBandwidth, compactionBandwidth float64
 	perLevelBandwidth := make(map[int]float64)
 
 	// Find the compaction that is currently using disk (only one can be active at a time)
@@ -387,7 +410,11 @@ func (m *Metrics) calculateThroughput() {
 			continue
 		}
 
-		if w.Level == -1 {
+		if w.Level == -2 {
+			// WAL write: sequential write bandwidth
+			bandwidth := w.SizeMB / writeDuration
+			walBandwidth += bandwidth
+		} else if w.Level == -1 {
 			// Flush: only output bandwidth (writes to disk)
 			bandwidth := w.SizeMB / writeDuration
 			flushBandwidth += bandwidth
@@ -408,7 +435,7 @@ func (m *Metrics) calculateThroughput() {
 	// EMA formula: smoothed = alpha * instantaneous + (1-alpha) * previous_smoothed
 	// alpha = 0.2 gives approximately 5-sample average
 
-	totalBandwidth := flushBandwidth + compactionBandwidth
+	totalBandwidth := walBandwidth + flushBandwidth + compactionBandwidth
 
 	if m.isFirstSample {
 		// Initialize EMA with first sample
@@ -595,6 +622,16 @@ func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int
 	m.UpdateReadAmplification(lsmTree, numMemtables)
 	m.calculateThroughput()
 	m.CapThroughput(ioThroughputMBps) // Enforce physical disk limits
+
+	// Calculate disk utilization percentage
+	if ioThroughputMBps > 0 {
+		m.DiskUtilizationPercent = (m.TotalWriteThroughputMBps / ioThroughputMBps) * 100.0
+		if m.DiskUtilizationPercent > 100.0 {
+			m.DiskUtilizationPercent = 100.0
+		}
+	} else {
+		m.DiskUtilizationPercent = 0.0
+	}
 
 	// Calculate sustainable rate range
 	m.MaxSustainableWriteRateMBps = m.CalculateMaxSustainableWriteRate(ioThroughputMBps, maxBackgroundJobs, config.CompactionStyle)

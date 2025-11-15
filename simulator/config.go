@@ -176,6 +176,12 @@ type SimConfig struct {
 	RandomSeed                int64 `json:"randomSeed"`                // Random seed for reproducibility (0 = use time-based seed)
 	MaxStalledWriteMemoryMB   int   `json:"maxStalledWriteMemoryMB"`   // OOM threshold: stop simulation if stalled write backlog exceeds this (default 4096 MB = 4GB)
 
+	// WAL (Write-Ahead Log) Configuration
+	// RocksDB Reference: https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log
+	EnableWAL        bool    `json:"enableWAL"`        // Enable Write-Ahead Log (default true, matches RocksDB)
+	WALSync          bool    `json:"walSync"`          // Sync WAL after each write (default false, matches RocksDB WriteOptions::sync)
+	WALSyncLatencyMs float64 `json:"walSyncLatencyMs"` // fsync() latency in milliseconds (default 1.5ms for NVMe/SSD)
+
 	// Traffic Distribution
 	TrafficDistribution TrafficDistributionConfig `json:"trafficDistribution"` // Traffic distribution configuration
 
@@ -208,6 +214,9 @@ func DefaultConfig() SimConfig {
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step (real-time feel)
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
+		EnableWAL:                        true,                     // WAL enabled (RocksDB default)
+		WALSync:                          false,                    // Sync after each write (RocksDB WriteOptions::sync default: false)
+		WALSyncLatencyMs:                 1.5,                      // 1.5ms fsync latency (typical NVMe/SSD)
 		TrafficDistribution: TrafficDistributionConfig{
 			Model:         TrafficModelConstant,
 			WriteRateMBps: 10.0,
@@ -245,6 +254,9 @@ func ThreeLevelConfig() SimConfig {
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step
 		RandomSeed:                       0,                        // 0 = use time-based seed
 		MaxStalledWriteMemoryMB:          4096,                     // 4GB OOM threshold (reasonable default for simulator)
+		EnableWAL:                        true,                     // WAL enabled (RocksDB default)
+		WALSync:                          false,                    // Sync after each write (RocksDB WriteOptions::sync default: false)
+		WALSyncLatencyMs:                 1.5,                      // 1.5ms fsync latency (typical NVMe/SSD)
 		TrafficDistribution: TrafficDistributionConfig{
 			Model:         TrafficModelConstant,
 			WriteRateMBps: 10.0,

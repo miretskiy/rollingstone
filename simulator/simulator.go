@@ -675,7 +675,44 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		s.nextFlushCompletionTime = 0 // No need to track flush completion time when not stalled
 	}
 
-	// Add write to memtable
+	// Write to WAL BEFORE memtable (durability guarantee)
+	// FIDELITY: RocksDB Reference - WriteToWAL happens before memtable insert
+	// https://github.com/facebook/rocksdb/blob/main/db/db_impl/db_impl_write.cc
+	//
+	// RocksDB always writes to WAL before memtable to ensure durability.
+	// WAL writes are sequential and may include fsync() for durability.
+	if s.config.EnableWAL {
+		walSizeMB := event.SizeMB()
+
+		// Calculate WAL write duration: sequential write time + optional sync
+		ioTimeSec := walSizeMB / s.config.IOThroughputMBps
+		walDuration := ioTimeSec
+
+		// Add fsync latency if WALSync is enabled
+		if s.config.WALSync {
+			syncTimeSec := s.config.WALSyncLatencyMs / 1000.0
+			walDuration += syncTimeSec
+		}
+
+		// WAL write contends for disk bandwidth (token bucket model)
+		walStartTime := max(s.virtualTime, s.diskBusyUntil)
+		walCompleteTime := walStartTime + walDuration
+
+		// Reserve disk bandwidth for WAL write
+		s.diskBusyUntil = walCompleteTime
+
+		// Track WAL bytes separately (NOT included in LSM write amplification)
+		// RocksDB's write amplification metric measures LSM compaction overhead only,
+		// not WAL writes. See: internal_stats.cc:1806-1842 (write_amp = compaction_output / flush_input)
+		s.metrics.WALBytesWritten += walSizeMB
+		// NOTE: WAL bytes are NOT added to totalDiskWrittenMB (which tracks flush + compaction only)
+
+		// Track WAL write activity for disk throughput/utilization calculations
+		// Use Level = -2 to distinguish WAL from flush (-1) and compactions (0+)
+		s.metrics.RecordWALWrite(walStartTime, walCompleteTime, walSizeMB)
+	}
+
+	// Add write to memtable (after WAL)
 	s.lsm.AddWrite(event.SizeMB(), s.virtualTime)
 	s.metrics.RecordUserWrite(event.SizeMB())
 
@@ -875,6 +912,29 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 		}
 	}
 
+	// Calculate input size for logging
+	var totalInputMB float64
+	for _, f := range job.SourceFiles {
+		totalInputMB += f.SizeMB
+	}
+	for _, f := range job.TargetFiles {
+		totalInputMB += f.SizeMB
+	}
+
+	// Log compaction start
+	compactionType := fmt.Sprintf("L%d→L%d", fromLevel, job.ToLevel)
+	if job.IsIntraL0 {
+		compactionType = "L0→L0"
+	}
+	s.logEvent("[COMPACTION START] %s: %d src files (%.1f MB) + %d tgt files (%.1f MB) = %.1f MB input",
+		compactionType,
+		len(job.SourceFiles), sourceSize,
+		len(job.TargetFiles), totalInputMB-sourceSize,
+		totalInputMB)
+
+	// Track start time for duration calculation
+	compactionStartTime := event.StartTime()
+
 	// Execute the compaction using the compactor interface
 	inputSize, outputSize, outputFileCount := s.compactor.ExecuteCompaction(job, s.lsm, s.config, s.virtualTime)
 
@@ -882,9 +942,34 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 		return
 	}
 
+	// Calculate compaction duration and throughput
+	compactionDuration := event.Timestamp() - compactionStartTime
+	var compactionThroughput float64
+	if compactionDuration > 0 {
+		compactionThroughput = inputSize / compactionDuration
+	}
+
 	// Detect trivial move: no overlapping files in target level = metadata-only operation
 	// RocksDB optimization: just updates file metadata (level pointer), no disk writes
 	isTrivialMove := len(job.TargetFiles) == 0 && !job.IsIntraL0 && inputSize == outputSize
+
+	// Log compaction completion with duration and throughput
+	trivialMoveTag := ""
+	if isTrivialMove {
+		trivialMoveTag = " [trivial move]"
+	}
+
+	if compactionDuration < 0.01 {
+		s.logEvent("[COMPACTION END] %s: %.1f MB output in <0.01s (%.1f MB/s throughput)%s",
+			compactionType, outputSize, compactionThroughput, trivialMoveTag)
+	} else {
+		s.logEvent("[COMPACTION END] %s: %.1f MB output in %.2fs (%.1f MB/s throughput)%s",
+			compactionType, outputSize, compactionDuration, compactionThroughput, trivialMoveTag)
+	}
+
+	// Update metrics with last compaction performance
+	s.metrics.LastCompactionDurationSec = compactionDuration
+	s.metrics.LastCompactionThroughputMBps = compactionThroughput
 
 	// Move from in-progress to completed
 	s.metrics.CompleteWrite(event.Timestamp(), fromLevel)

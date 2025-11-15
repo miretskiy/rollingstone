@@ -1503,3 +1503,159 @@ func TestSimulator_Step37_NoPastEventsEverScheduled(t *testing.T) {
 
 	t.Logf("SUCCESS: Verified no past events after 10 steps (virtualTime=%.3f)", sim.virtualTime)
 }
+
+// ============================================================================
+// DISK UTILIZATION TESTS
+// ============================================================================
+
+// Test that WAL writes are tracked in throughput metrics
+func TestWALThroughputTracking(t *testing.T) {
+	config := DefaultConfig()
+	config.WriteRateMBps = 15.0
+	config.IOThroughputMBps = 500.0
+	config.EnableWAL = true
+	config.WALSync = false // No sync for faster writes
+	config.WALSyncLatencyMs = 1.5
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+
+	// Reset to schedule initial events (simulator starts in dormant state)
+	sim.Reset()
+
+	// Debug: log initial state
+	if !sim.queue.IsEmpty() {
+		nextEvent := sim.queue.Peek()
+		t.Logf("Next event type: %s at time %.3f", nextEvent.String(), nextEvent.Timestamp())
+	} else {
+		t.Logf("Queue is empty after Reset!")
+	}
+
+	// Run simulation and check that WAL writes are being tracked
+	foundWALWrite := false
+	for i := 0; i < 100; i++ {
+		if sim.queue.IsEmpty() {
+			t.Logf("Queue is empty at step %d", i)
+			break
+		}
+		sim.Step()
+
+		// Debug: log state after each step
+		if i < 5 {
+			t.Logf("Step %d: virtualTime=%.3f, WALBytesWritten=%.3f, recentWrites count=%d, EnableWAL=%v",
+				i, sim.virtualTime, sim.metrics.WALBytesWritten, len(sim.metrics.recentWrites), sim.config.EnableWAL)
+		}
+
+		// Check if we have any WAL writes in recentWrites (Level = -2)
+		for _, w := range sim.metrics.recentWrites {
+			if w.Level == -2 {
+				foundWALWrite = true
+				t.Logf("Found WAL write: StartTime=%.3f, EndTime=%.3f, SizeMB=%.3f", w.StartTime, w.EndTime, w.SizeMB)
+				break
+			}
+		}
+		if foundWALWrite {
+			break
+		}
+	}
+
+	t.Logf("After 100 steps: WALBytesWritten=%.2f MB, recentWrites count=%d", sim.metrics.WALBytesWritten, len(sim.metrics.recentWrites))
+
+	require.True(t, foundWALWrite, "WAL writes should be tracked in recentWrites with Level=-2")
+	require.Greater(t, sim.metrics.WALBytesWritten, 0.0, "WAL bytes should be > 0")
+
+	t.Logf("SUCCESS: WAL writes are being tracked (WALBytesWritten=%.2f MB)", sim.metrics.WALBytesWritten)
+}
+
+// Test that disk utilization is 0% when there's no write activity
+func TestDiskUtilization_ZeroWhenNoActivity(t *testing.T) {
+	config := DefaultConfig()
+	config.IOThroughputMBps = 500.0
+	config.WriteRateMBps = 0 // No writes
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+
+	sim.Reset() // Schedule initial events
+
+	// Initial metrics should have 0% disk utilization with no writes
+	require.Equal(t, 0.0, sim.metrics.DiskUtilizationPercent, "Initial disk utilization should be 0%%")
+
+	t.Logf("SUCCESS: Disk utilization is 0%% when no activity")
+}
+
+// Test that disk utilization is correctly calculated based on throughput
+func TestDiskUtilization_CalculatedFromThroughput(t *testing.T) {
+	config := DefaultConfig()
+	config.WriteRateMBps = 15.0
+	config.IOThroughputMBps = 500.0
+	config.EnableWAL = true
+	config.WALSync = true
+	config.WALSyncLatencyMs = 1.5
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+
+	sim.Reset() // Schedule initial events
+
+	// Run simulation for a bit to generate activity
+	// Need enough steps for throughput EMA to stabilize
+	for i := 0; i < 500; i++ {
+		if sim.queue.IsEmpty() || sim.metrics.IsOOMKilled {
+			break
+		}
+		sim.Step()
+	}
+
+	// Disk utilization should be non-zero and reasonable when there's write activity
+	// With 15 MB/s write rate and WAL, we expect some utilization
+	if sim.metrics.TotalWriteThroughputMBps > 0 {
+		require.Greater(t, sim.metrics.DiskUtilizationPercent, 0.0, "Disk utilization should be > 0%% with active writes")
+	}
+	require.LessOrEqual(t, sim.metrics.DiskUtilizationPercent, 100.0, "Disk utilization should be <= 100%%")
+
+	// Manual check: totalWriteThroughputMBps / ioThroughputMBps * 100 = diskUtilizationPercent
+	expectedUtil := (sim.metrics.TotalWriteThroughputMBps / config.IOThroughputMBps) * 100.0
+	if expectedUtil > 100.0 {
+		expectedUtil = 100.0
+	}
+	require.InDelta(t, expectedUtil, sim.metrics.DiskUtilizationPercent, 0.001,
+		"Disk utilization should match formula: (totalWriteThroughput / ioThroughput) * 100")
+
+	t.Logf("SUCCESS: Disk utilization correctly calculated: %.2f%% (totalWriteThroughput=%.2f MB/s, ioThroughput=%.2f MB/s)",
+		sim.metrics.DiskUtilizationPercent, sim.metrics.TotalWriteThroughputMBps, config.IOThroughputMBps)
+}
+
+// Test that disk utilization is capped at 100% even when throughput exceeds capacity
+func TestDiskUtilization_CappedAt100Percent(t *testing.T) {
+	config := DefaultConfig()
+	config.WriteRateMBps = 100.0 // High write rate
+	config.IOThroughputMBps = 50.0 // Low disk throughput - will saturate
+	config.EnableWAL = true
+	config.MaxBackgroundJobs = 8
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+
+	sim.Reset() // Schedule initial events
+
+	// Run simulation for a while to saturate disk
+	for i := 0; i < 200; i++ {
+		if sim.queue.IsEmpty() || sim.metrics.IsOOMKilled {
+			break
+		}
+		sim.Step()
+	}
+
+	// Disk utilization should be capped at 100%
+	require.LessOrEqual(t, sim.metrics.DiskUtilizationPercent, 100.0,
+		"Disk utilization should never exceed 100%%")
+
+	// With high write rate and low disk throughput, we should be near 100%
+	if sim.metrics.TotalWriteThroughputMBps >= config.IOThroughputMBps {
+		require.Equal(t, 100.0, sim.metrics.DiskUtilizationPercent,
+			"Disk utilization should be 100%% when total throughput >= disk capacity")
+	}
+
+	t.Logf("SUCCESS: Disk utilization capped at 100%% (totalWriteThroughput=%.2f MB/s, ioThroughput=%.2f MB/s)",
+		sim.metrics.TotalWriteThroughputMBps, config.IOThroughputMBps)
+}

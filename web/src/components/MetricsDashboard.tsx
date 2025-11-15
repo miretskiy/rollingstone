@@ -1,4 +1,4 @@
-import { TrendingUp, Activity, Database, Clock, ArrowDown } from 'lucide-react';
+import { TrendingUp, Activity, Database, Clock, ArrowDown, HardDrive } from 'lucide-react';
 import { useStore } from '../store';
 
 export function MetricsDashboard() {
@@ -185,6 +185,11 @@ export function MetricsDashboard() {
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
                         {currentMetrics && `${formatBytes(currentMetrics.totalDataWrittenMB)} written`}
+                        {currentMetrics && currentMetrics.walBytesWritten > 0 && (
+                            <div className="text-xs text-gray-600 mt-0.5">
+                                {`WAL: ${formatBytes(currentMetrics.walBytesWritten)}`}
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -241,6 +246,36 @@ export function MetricsDashboard() {
                                     </div>
                                 )}
                             </>
+                        )}
+                    </div>
+                </div>
+
+                {/* Disk Utilization */}
+                <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                            <HardDrive className="w-4 h-4 text-cyan-400" />
+                            <span className="text-sm text-gray-400">Disk Utilization</span>
+                        </div>
+                    </div>
+                    <div className="text-3xl font-bold text-cyan-400">
+                        {currentMetrics?.diskUtilizationPercent != null
+                            ? `${currentMetrics.diskUtilizationPercent.toFixed(1)}%`
+                            : '--'}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                        {currentMetrics?.diskUtilizationPercent != null && (
+                            <div>
+                                {currentMetrics.diskUtilizationPercent >= 95 && (
+                                    <span className="text-red-400">Near capacity</span>
+                                )}
+                                {currentMetrics.diskUtilizationPercent >= 80 && currentMetrics.diskUtilizationPercent < 95 && (
+                                    <span className="text-yellow-400">High utilization</span>
+                                )}
+                                {currentMetrics.diskUtilizationPercent < 80 && (
+                                    <span className="text-green-400">Normal</span>
+                                )}
+                            </div>
                         )}
                     </div>
                 </div>

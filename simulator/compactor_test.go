@@ -555,6 +555,7 @@ func TestMaxCompactionBytesDefault(t *testing.T) {
 		TargetFileSizeMB:     64,
 		MaxCompactionBytesMB: 0,  // Should default to 64 * 25 = 1600 MB
 		L0CompactionTrigger:  10, // High threshold to avoid intra-L0
+		LevelMultiplier:      10, // For intra-L0 size ratio check
 	}
 	lsm := NewLSMTree(3, 64.0)
 	compactor := NewLeveledCompactor(0)
@@ -569,13 +570,13 @@ func TestMaxCompactionBytesDefault(t *testing.T) {
 		lsm.Levels[0].FileCount++
 	}
 
-	// Add some files to L1 to create overlap
-	for i := 0; i < 5; i++ {
+	// Add large L1 to avoid intra-L0 (must be > 20x L0 = 40000 MB)
+	for i := 0; i < 500; i++ {
 		lsm.Levels[1].Files = append(lsm.Levels[1].Files, &SSTFile{
 			ID:     fmt.Sprintf("l1-f%d", i),
-			SizeMB: 64,
+			SizeMB: 100,
 		})
-		lsm.Levels[1].TotalSize += 64
+		lsm.Levels[1].TotalSize += 100
 		lsm.Levels[1].FileCount++
 	}
 
@@ -584,29 +585,31 @@ func TestMaxCompactionBytesDefault(t *testing.T) {
 		t.Fatal("Expected compaction job, got nil")
 	}
 
-	// Calculate total input size
-	var totalInput float64
-	for _, f := range job.SourceFiles {
-		totalInput += f.SizeMB
-	}
-	for _, f := range job.TargetFiles {
-		totalInput += f.SizeMB
+	// FIDELITY VERIFICATION: RocksDB picks ALL L0 files regardless of max_compaction_bytes
+	// Reference: GetOverlappingL0Files() in compaction_picker.cc:1233-1263
+	// max_compaction_bytes is NOT enforced on L0 source file selection
+	if len(job.SourceFiles) != 20 {
+		t.Errorf("Expected ALL 20 L0 files picked, got %d (RocksDB does not limit L0 source files)",
+			len(job.SourceFiles))
 	}
 
-	// With max_compaction_bytes = 0 -> 1600 MB, and L0 = 2000 MB,
-	// we should see reduced target files to stay under limit
-	expectedMax := float64(64 * 25)   // 1600 MB
-	if totalInput > expectedMax*1.1 { // Allow 10% tolerance for distribution sampling
-		t.Errorf("Total input %1f MB exceeds max_compaction_bytes limit %1f MB by >10%%", totalInput, expectedMax)
+	var l0Size float64
+	for _, f := range job.SourceFiles {
+		l0Size += f.SizeMB
+	}
+
+	if l0Size != 2000.0 {
+		t.Errorf("Expected L0 source size = 2000 MB, got %.1f MB", l0Size)
 	}
 }
 
-// TestIntraL0RespectsMaxCompactionBytes verifies that intra-L0 compaction respects max_compaction_bytes
-func TestIntraL0RespectsMaxCompactionBytes(t *testing.T) {
+// TestIntraL0PreferredWhenBaseLevelSmall verifies size-based intra-L0 preference
+func TestIntraL0PreferredWhenBaseLevelSmall(t *testing.T) {
 	config := SimConfig{
 		TargetFileSizeMB:     64,
-		MaxCompactionBytesMB: 200, // Limit to 200 MB
-		L0CompactionTrigger:  4,   // Intra-L0 triggers at 4+2=6 files
+		MaxCompactionBytesMB: 0,  // Use default (64 * 25 = 1600 MB)
+		L0CompactionTrigger:  4,  // Intra-L0 triggers at 4+2=6 files
+		LevelMultiplier:      10, // For size ratio calculation
 	}
 	lsm := NewLSMTree(3, 64.0)
 	compactor := NewLeveledCompactor(0)
@@ -621,28 +624,30 @@ func TestIntraL0RespectsMaxCompactionBytes(t *testing.T) {
 		lsm.Levels[0].FileCount++
 	}
 
+	// Add small L1 (500 MB < 20x L0 = 20000 MB) to trigger intra-L0 preference
+	// RocksDB Reference: PickSizeBasedIntraL0Compaction() prefers intra-L0 when Lbase is small
+	for i := 0; i < 5; i++ {
+		lsm.Levels[1].Files = append(lsm.Levels[1].Files, &SSTFile{
+			ID:     fmt.Sprintf("l1-f%d", i),
+			SizeMB: 100,
+		})
+		lsm.Levels[1].TotalSize += 100
+		lsm.Levels[1].FileCount++
+	}
+
 	job := compactor.PickCompaction(lsm, config)
 	if job == nil {
 		t.Fatal("Expected compaction job, got nil")
 	}
 
-	// Should be intra-L0 (10 files >= 6 threshold)
+	// FIDELITY VERIFICATION: RocksDB prefers intra-L0 when Lbase < 20x L0
+	// Reference: PickSizeBasedIntraL0Compaction() in compaction_picker_level.cc:919-971
+	// Condition: lbase_size (500 MB) <= min_lbase_size (1000 * 20 = 20000 MB)
 	if !job.IsIntraL0 {
-		t.Errorf("Expected intra-L0 compaction, got L0->L1")
+		t.Errorf("Expected intra-L0 compaction when Lbase (500 MB) < 20x L0 (20000 MB), got L0->L1")
 	}
 
-	// Calculate total source size
-	var totalSize float64
-	for _, f := range job.SourceFiles {
-		totalSize += f.SizeMB
-	}
-
-	// Should not exceed 200 MB limit (should pick exactly 2 files = 200 MB)
-	if totalSize > 200 {
-		t.Errorf("Intra-L0 compaction size %.1f MB exceeds max_compaction_bytes 200 MB", totalSize)
-	}
-
-	// Should have at least 2 files
+	// Should have at least 2 files for intra-L0
 	if len(job.SourceFiles) < 2 {
 		t.Errorf("Expected at least 2 files in intra-L0 compaction, got %d", len(job.SourceFiles))
 	}

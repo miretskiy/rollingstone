@@ -10,6 +10,7 @@ interface ConfigInputProps {
     max: number;
     tooltip?: string;
     unit?: string;
+    disabled?: boolean; // External disabled state (e.g., when parent feature is disabled)
 }
 
 export function ConfigInput({
@@ -18,7 +19,8 @@ export function ConfigInput({
     min,
     max,
     tooltip,
-    unit = ''
+    unit = '',
+    disabled: externalDisabled = false
 }: ConfigInputProps) {
     // Use selectors to only re-render when this specific field changes
     const value = useStore(state => (state.config[field] as number));
@@ -28,7 +30,7 @@ export function ConfigInput({
 
     // Static params can't be changed while running
     const isStaticParam = field !== 'writeRateMBps' && field !== 'simulationSpeedMultiplier';
-    const disabled = !isConnected || (isRunning && isStaticParam);
+    const disabled = externalDisabled || !isConnected || (isRunning && isStaticParam);
     const inputId = `config-${field}`;
     const [localValue, setLocalValue] = useState(String(value));
     const [isFocused, setIsFocused] = useState(false);

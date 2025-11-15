@@ -472,3 +472,140 @@ func TestUniversalCompactionMultiLevelFileRemoval(t *testing.T) {
 		t.Logf("Test completed successfully at step %d", multiLevelStep)
 	}
 }
+
+// TestWALEnabled verifies that WAL writes are tracked correctly when enabled
+func TestWALEnabled(t *testing.T) {
+	config := DefaultConfig()
+	config.EnableWAL = true
+	config.WALSync = true
+	config.WALSyncLatencyMs = 1.5
+	config.WriteRateMBps = 10.0
+	config.SimulationSpeedMultiplier = 10
+	config.MemtableFlushSizeMB = 64
+	config.IOThroughputMBps = 125.0
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+	require.NoError(t, sim.Reset())
+
+	// Run simulation for a few seconds
+	for i := 0; i < 50; i++ {
+		sim.Step()
+		if sim.VirtualTime() > 5.0 {
+			break
+		}
+	}
+
+	metrics := sim.Metrics()
+
+	// Verify WAL bytes were written
+	require.Greater(t, metrics.WALBytesWritten, 0.0,
+		"WAL bytes should be tracked when WAL is enabled")
+
+	// Verify WAL bytes approximately equal user writes (1:1 ratio before memtable flush)
+	// Allow some tolerance since we might have started mid-write
+	require.InDelta(t, metrics.TotalDataWrittenMB, metrics.WALBytesWritten, metrics.TotalDataWrittenMB*0.1,
+		"WAL bytes should approximately match user writes (before flush)")
+
+	t.Logf("WAL enabled test: wrote %.2f MB user data, %.2f MB to WAL",
+		metrics.TotalDataWrittenMB, metrics.WALBytesWritten)
+}
+
+// TestWALDisabled verifies that WAL writes are not tracked when disabled
+func TestWALDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.EnableWAL = false // Disable WAL
+	config.WriteRateMBps = 10.0
+	config.SimulationSpeedMultiplier = 10
+	config.MemtableFlushSizeMB = 64
+	config.IOThroughputMBps = 125.0
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+	require.NoError(t, sim.Reset())
+
+	// Run simulation for a few seconds
+	for i := 0; i < 50; i++ {
+		sim.Step()
+		if sim.VirtualTime() > 5.0 {
+			break
+		}
+	}
+
+	metrics := sim.Metrics()
+
+	// Verify no WAL bytes were written
+	require.Equal(t, 0.0, metrics.WALBytesWritten,
+		"WAL bytes should be 0 when WAL is disabled")
+
+	// Verify user writes still happened
+	require.Greater(t, metrics.TotalDataWrittenMB, 0.0,
+		"User writes should still be tracked when WAL is disabled")
+
+	t.Logf("WAL disabled test: wrote %.2f MB user data, %.2f MB to WAL (expected 0)",
+		metrics.TotalDataWrittenMB, metrics.WALBytesWritten)
+}
+
+// TestWALWriteAmplification verifies that WAL contributes to write amplification
+func TestWALWriteAmplification(t *testing.T) {
+	// Test with WAL enabled
+	configWithWAL := DefaultConfig()
+	configWithWAL.EnableWAL = true
+	configWithWAL.WALSync = true
+	configWithWAL.WriteRateMBps = 10.0
+	configWithWAL.SimulationSpeedMultiplier = 10
+	configWithWAL.MemtableFlushSizeMB = 64
+	configWithWAL.L0CompactionTrigger = 4
+	configWithWAL.IOThroughputMBps = 125.0
+
+	simWithWAL, err := NewSimulator(configWithWAL)
+	require.NoError(t, err)
+	require.NoError(t, simWithWAL.Reset())
+
+	// Run until we get some flushes and compactions
+	for i := 0; i < 100; i++ {
+		simWithWAL.Step()
+		if simWithWAL.VirtualTime() > 10.0 {
+			break
+		}
+	}
+
+	metricsWithWAL := simWithWAL.Metrics()
+
+	// Test with WAL disabled
+	configNoWAL := DefaultConfig()
+	configNoWAL.EnableWAL = false // Disable WAL
+	configNoWAL.WriteRateMBps = 10.0
+	configNoWAL.SimulationSpeedMultiplier = 10
+	configNoWAL.MemtableFlushSizeMB = 64
+	configNoWAL.L0CompactionTrigger = 4
+	configNoWAL.IOThroughputMBps = 125.0
+	configNoWAL.RandomSeed = configWithWAL.RandomSeed // Use same seed for determinism
+
+	simNoWAL, err := NewSimulator(configNoWAL)
+	require.NoError(t, err)
+	require.NoError(t, simNoWAL.Reset())
+
+	// Run for same amount of time
+	for i := 0; i < 100; i++ {
+		simNoWAL.Step()
+		if simNoWAL.VirtualTime() > 10.0 {
+			break
+		}
+	}
+
+	metricsNoWAL := simNoWAL.Metrics()
+
+	// Verify WAL increases write amplification
+	// With WAL: WA includes WAL + flush + compaction
+	// Without WAL: WA includes only flush + compaction
+	// Therefore: WA_with_WAL should be >= WA_without_WAL
+	require.GreaterOrEqual(t, metricsWithWAL.WriteAmplification, metricsNoWAL.WriteAmplification,
+		"Write amplification with WAL should be >= without WAL")
+
+	t.Logf("WAL write amplification test:")
+	t.Logf("  With WAL: WA=%.2fx, WAL bytes=%.2f MB, user writes=%.2f MB",
+		metricsWithWAL.WriteAmplification, metricsWithWAL.WALBytesWritten, metricsWithWAL.TotalDataWrittenMB)
+	t.Logf("  Without WAL: WA=%.2fx, WAL bytes=%.2f MB, user writes=%.2f MB",
+		metricsNoWAL.WriteAmplification, metricsNoWAL.WALBytesWritten, metricsNoWAL.TotalDataWrittenMB)
+}

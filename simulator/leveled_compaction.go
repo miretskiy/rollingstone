@@ -815,8 +815,19 @@ func (c *LeveledCompactor) executeCompactionSingle(job *CompactionJob, lsm *LSMT
 
 	// CRITICAL BUG FIX: Universal compaction can pick files from MULTIPLE levels (e.g., L0 + L5 for size amplification)
 	// We must remove files from EACH level that contributed files, not just job.FromLevel!
-	// Since we know which levels contributed (from pickedRuns), we can remove files directly from those levels
-	// But we don't have access to pickedRuns here, so we need to group files by level
+	//
+	// WHY SOURCE FILES NEED MULTI-LEVEL GROUPING:
+	// - Universal size amplification compaction picks ALL sorted runs from L0 to base level
+	// - Example: L0 (25 files) + L5 (3 files) → L6, where source files span levels 0 and 5
+	// - Old bug: lsm.Levels[job.FromLevel].removeFiles(job.SourceFiles) only removed from FromLevel=0
+	// - Result: L5 files became "zombies" - remained in LSM but were actually compacted
+	//
+	// WHY TARGET FILES DON'T NEED MULTI-LEVEL GROUPING:
+	// - Target files are ALWAYS picked from a single level: job.ToLevel (the output level)
+	// - Universal compaction filters target files to exclude source files (no double-removal)
+	// - See universal_compaction.go:757-760 and :1084-1087 for explicit filtering logic
+	// - Therefore, line 855 correctly removes all target files from job.ToLevel
+	//
 	// Group source files by level by checking which level each file belongs to
 	sourceFilesByLevel := make(map[int][]*SSTFile)
 	for _, f := range job.SourceFiles {
@@ -851,7 +862,8 @@ func (c *LeveledCompactor) executeCompactionSingle(job *CompactionJob, lsm *LSMT
 		}
 	}
 
-	// Remove target files from target level
+	// Remove target files from target level (single level only - see comment above)
+	// Target files are always from job.ToLevel and already filtered to exclude source files
 	lsm.Levels[job.ToLevel].removeFiles(job.TargetFiles)
 
 	// Split output into multiple files based on target_file_size

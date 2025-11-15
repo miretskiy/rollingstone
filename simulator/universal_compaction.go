@@ -949,6 +949,14 @@ func (c *UniversalCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Com
 		//   }
 		// This checks: accumulated_size * (1 + ratio/100) < next_size → stop if true
 		// This means: if next run is more than (1 + ratio/100) times larger, stop picking
+		//
+		// FIDELITY NOTE: kCompactionStopStyleSimilarSize NOT IMPLEMENTED (intentional)
+		// RocksDB supports two stop styles:
+		//   1. kCompactionStopStyleTotalSize (default, IMPLEMENTED): candidate_size accumulates all picked files
+		//   2. kCompactionStopStyleSimilarSize (NOT IMPLEMENTED): candidate_size resets to last picked file
+		// The SimilarSize style is an obscure, non-default option rarely used in practice.
+		// We intentionally omit it to reduce simulation complexity without affecting typical workloads.
+		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_universal.cc#L965-974
 		if c.checkSizeRatioWithAccumulated(accumulatedSizeMB, nextSizeMB, sizeRatio) {
 			// Next sorted run is too large relative to accumulated size → stop picking
 			break

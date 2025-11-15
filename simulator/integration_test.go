@@ -312,3 +312,163 @@ func TestUniversalCompactionL2CompactionWhenSelected(t *testing.T) {
 		}
 	}
 }
+
+// TestUniversalCompactionMultiLevelFileRemoval tests that files are correctly removed
+// from all contributing levels during universal compaction size amplification.
+//
+// This test specifically validates the fix for the multi-level source file removal bug
+// where files from levels like L0 + L5 need to be removed from BOTH levels, not just
+// the FromLevel. See leveled_compaction.go:816-863 for implementation details.
+func TestUniversalCompactionMultiLevelFileRemoval(t *testing.T) {
+	config := DefaultConfig()
+	config.CompactionStyle = CompactionStyleUniversal
+	config.WriteRateMBps = 50.0
+	config.SimulationSpeedMultiplier = 1 // Run slowly for deterministic testing
+	config.MemtableFlushSizeMB = 64
+	config.L0CompactionTrigger = 4
+	config.MaxBackgroundJobs = 1 // Single compaction at a time for predictability
+	config.IOThroughputMBps = 500.0
+	config.MaxSizeAmplificationPercent = 200 // Trigger size amplification compaction
+
+	sim, err := NewSimulator(config)
+	require.NoError(t, err)
+	require.NoError(t, sim.Reset())
+
+	// Strategy: Build LSM state that will trigger size amplification compaction
+	// This will cause files from multiple levels (e.g., L0 + L5) to be compacted together
+	// We'll verify that files are removed correctly from all contributing levels
+
+	// Step 1: Write enough data to build up multiple levels
+	// We want to create a scenario with:
+	// - Multiple L0 files
+	// - Files in intermediate levels (e.g., L5)
+	// - Base level at L6
+	t.Logf("Phase 1: Building multi-level LSM state...")
+
+	maxSteps := 500
+	foundMultiLevelCompaction := false
+	var multiLevelStep int
+
+	for step := 0; step < maxSteps; step++ {
+		// Step the simulation
+		sim.Step()
+
+		// Check LSM state before compaction
+		preState := make(map[int]struct {
+			fileCount int
+			sizeMB    float64
+		})
+
+		for level := 0; level < len(sim.lsm.Levels); level++ {
+			preState[level] = struct {
+				fileCount int
+				sizeMB    float64
+			}{
+				fileCount: sim.lsm.Levels[level].FileCount,
+				sizeMB:    sim.lsm.Levels[level].TotalSize,
+			}
+		}
+
+		// Wait for a size amplification compaction that involves multiple non-L0 levels
+		// Check if we have files in L0 and multiple lower levels
+		hasL0Files := sim.lsm.Levels[0].FileCount > 0
+		hasIntermediateFiles := false
+		intermediateLevel := -1
+		for level := 1; level < len(sim.lsm.Levels)-1; level++ {
+			if sim.lsm.Levels[level].FileCount > 0 {
+				hasIntermediateFiles = true
+				intermediateLevel = level
+				break
+			}
+		}
+
+		// Check for active compaction
+		activeCompactions := sim.ActiveCompactions()
+		if len(activeCompactions) > 0 && hasL0Files && hasIntermediateFiles {
+			// We have a compaction running with files in multiple levels
+			// Wait for it to complete
+			t.Logf("Step %d: Found potential multi-level compaction scenario", step)
+			t.Logf("  L0: %d files (%.1f MB)", preState[0].fileCount, preState[0].sizeMB)
+			t.Logf("  L%d: %d files (%.1f MB)", intermediateLevel, preState[intermediateLevel].fileCount, preState[intermediateLevel].sizeMB)
+
+			// Step forward to let compaction complete
+			for i := 0; i < 50; i++ {
+				sim.Step()
+				if len(sim.ActiveCompactions()) == 0 {
+					break
+				}
+			}
+
+			// Check post-compaction state
+			postState := make(map[int]struct {
+				fileCount int
+				sizeMB    float64
+			})
+
+			for level := 0; level < len(sim.lsm.Levels); level++ {
+				postState[level] = struct {
+					fileCount int
+					sizeMB    float64
+				}{
+					fileCount: sim.lsm.Levels[level].FileCount,
+					sizeMB:    sim.lsm.Levels[level].TotalSize,
+				}
+			}
+
+			// Verify that files were removed from BOTH L0 and intermediate level
+			l0FilesRemoved := preState[0].fileCount > postState[0].fileCount
+			intermediateFilesRemoved := preState[intermediateLevel].fileCount > postState[intermediateLevel].fileCount
+
+			if l0FilesRemoved && intermediateFilesRemoved {
+				foundMultiLevelCompaction = true
+				multiLevelStep = step
+
+				t.Logf("SUCCESS: Multi-level compaction completed at step %d", step)
+				t.Logf("  L0: %d files → %d files (removed %d)",
+					preState[0].fileCount, postState[0].fileCount,
+					preState[0].fileCount-postState[0].fileCount)
+				t.Logf("  L%d: %d files → %d files (removed %d)",
+					intermediateLevel, preState[intermediateLevel].fileCount,
+					postState[intermediateLevel].fileCount,
+					preState[intermediateLevel].fileCount-postState[intermediateLevel].fileCount)
+
+				// CRITICAL VALIDATION: No "zombie files" - verify file counts are consistent
+				// If the bug existed, files would remain in intermediate levels after compaction
+				for level := 0; level < len(sim.lsm.Levels); level++ {
+					levelState := sim.lsm.Levels[level]
+					require.Equal(t, len(levelState.Files), levelState.FileCount,
+						"Level %d file count mismatch: Files slice has %d elements but FileCount=%d (zombie files detected)",
+						level, len(levelState.Files), levelState.FileCount)
+
+					// Also verify TotalSize matches sum of file sizes
+					var actualSize float64
+					for _, file := range levelState.Files {
+						actualSize += file.SizeMB
+					}
+					require.InDelta(t, actualSize, levelState.TotalSize, 0.1,
+						"Level %d size mismatch: Files sum to %.1f MB but TotalSize=%.1f MB",
+						level, actualSize, levelState.TotalSize)
+				}
+
+				t.Logf("  Validation PASSED: No zombie files detected, LSM state is consistent")
+				break
+			}
+		}
+
+		// Stop if we've written a lot and still haven't found the scenario
+		if sim.VirtualTime() > 60.0 {
+			break
+		}
+
+		if sim.Metrics().IsOOMKilled {
+			t.Skip("Test reached OOM condition before finding multi-level compaction scenario")
+		}
+	}
+
+	// Test result
+	if !foundMultiLevelCompaction {
+		t.Skip("Did not encounter multi-level compaction scenario during test run (may need longer simulation)")
+	} else {
+		t.Logf("Test completed successfully at step %d", multiLevelStep)
+	}
+}

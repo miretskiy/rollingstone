@@ -535,8 +535,10 @@ export function SimulationControls() {
                     </div>
                   </>
                 )}
-                <ConfigInput label="Deduplication Factor" field="compactionReductionFactor" min={0.1} max={1.0}
-                  tooltip="Data reduction during compaction (0.9 = 10% reduction)" />
+                <ConfigInput label="Deduplication Factor" field="deduplicationFactor" min={0.1} max={1.0}
+                  tooltip="Logical size after deduplication (0.9 = 10% from tombstones/overwrites, 1.0 = no dedup)" />
+                <ConfigInput label="Compression Factor" field="compressionFactor" min={0.1} max={1.0}
+                  tooltip="Physical size after compression (0.7 = 1.4x typical Snappy, 0.4 = 2.5x Zstd, 1.0 = no compression)" />
               </div>
               
               {/* Overlap Distribution Controls */}

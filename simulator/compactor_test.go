@@ -119,7 +119,7 @@ func TestLeveledCompactorNeedsCompaction(t *testing.T) {
 		L0CompactionTrigger:       4,
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
-		CompactionReductionFactor: 0.9,
+		DeduplicationFactor: 0.9,
 	}
 
 	tests := []struct {
@@ -182,7 +182,7 @@ func TestLeveledCompactorPickCompaction(t *testing.T) {
 		L0CompactionTrigger:       4,
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
-		CompactionReductionFactor: 0.9,
+		DeduplicationFactor: 0.9,
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
 	}
@@ -263,7 +263,7 @@ func TestLeveledCompactorExecuteCompaction(t *testing.T) {
 		L0CompactionTrigger:       4,
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
-		CompactionReductionFactor: 0.9,
+		DeduplicationFactor: 0.9,
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
 	}
@@ -661,7 +661,7 @@ func TestTargetFileSizePerLevel(t *testing.T) {
 	config := SimConfig{
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
-		CompactionReductionFactor: 1.0,   // No reduction (but compactor applies 0.9 for L0→L1, 0.99 for deeper)
+		DeduplicationFactor: 1.0,   // No reduction (but compactor applies 0.9 for L0→L1, 0.99 for deeper)
 		MaxCompactionBytesMB:      10000, // Large enough to not interfere
 		L0CompactionTrigger:       100,   // Prevent intra-L0
 	}
@@ -747,7 +747,7 @@ func TestTargetFileSizePerLevel(t *testing.T) {
 func TestTrivialMove(t *testing.T) {
 	config := SimConfig{
 		TargetFileSizeMB:          64,
-		CompactionReductionFactor: 0.9, // 10% reduction for normal compaction
+		DeduplicationFactor: 0.9, // 10% reduction for normal compaction
 		MaxCompactionBytesMB:      10000,
 		L0CompactionTrigger:       100, // Prevent intra-L0
 	}
@@ -3734,7 +3734,8 @@ func TestExecuteCompactionWithSubcompactions(t *testing.T) {
 	config := DefaultConfig()
 	config.CompactionStyle = CompactionStyleLeveled
 	config.TargetFileSizeMB = 64
-	config.CompactionReductionFactor = 0.9
+	config.DeduplicationFactor = 0.9
+	config.CompressionFactor = 0.7
 
 	compactor := NewLeveledCompactor(12345)
 	lsm := NewLSMTree(7, 64.0)

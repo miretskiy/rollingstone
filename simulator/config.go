@@ -153,9 +153,10 @@ type SimConfig struct {
 	LevelMultiplier        int `json:"levelMultiplier"`        // max_bytes_for_level_multiplier (default 10)
 
 	// SST Files
-	TargetFileSizeMB          int     `json:"targetFileSizeMB"`          // target_file_size_base (default 64MB)
-	TargetFileSizeMultiplier  int     `json:"targetFileSizeMultiplier"`  // target_file_size_multiplier (default 1, but 2 makes sense for deeper levels)
-	CompactionReductionFactor float64 `json:"compactionReductionFactor"` // Custom: deduplication/compression (0.5-1.0)
+	TargetFileSizeMB         int     `json:"targetFileSizeMB"`         // target_file_size_base (default 64MB)
+	TargetFileSizeMultiplier int     `json:"targetFileSizeMultiplier"` // target_file_size_multiplier (default 1, but 2 makes sense for deeper levels)
+	DeduplicationFactor      float64 `json:"deduplicationFactor"`      // Logical size reduction from tombstones/overwrites (0.9 = 10% dedup, 1.0 = no dedup)
+	CompressionFactor        float64 `json:"compressionFactor"`        // Physical size reduction from compression (0.7 = 1.4x Snappy, 0.4 = 2.5x Zstd, 1.0 = no compression)
 
 	// Compaction Parallelism & Performance
 	MaxBackgroundJobs                int             `json:"maxBackgroundJobs"`                // max_background_jobs (default 2) - parallel compactions
@@ -200,7 +201,8 @@ func DefaultConfig() SimConfig {
 		LevelMultiplier:                  10,                       // 10x multiplier (RocksDB default)
 		TargetFileSizeMB:                 64,                       // 64MB SST files (RocksDB default)
 		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level (L1=64MB, L2=128MB, L3=256MB, etc.)
-		CompactionReductionFactor:        0.9,                      // 10% reduction (dedup/compression)
+		DeduplicationFactor:              0.9,                      // 10% logical reduction (tombstones, overwrites)
+		CompressionFactor:                0.7,                      // 30% physical reduction (1.4x Snappy compression, RocksDB default)
 		MaxBackgroundJobs:                2,                        // 2 parallel compactions (RocksDB default)
 		MaxSubcompactions:                1,                        // No intra-compaction parallelism (RocksDB default)
 		MaxCompactionBytesMB:             1600,                     // 25x target_file_size_base (RocksDB typical default)
@@ -241,7 +243,8 @@ func ThreeLevelConfig() SimConfig {
 		LevelMultiplier:                  10,                       // 10x multiplier (but only 3 levels total)
 		TargetFileSizeMB:                 64,                       // 64MB SST files
 		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level
-		CompactionReductionFactor:        0.9,                      // 10% reduction
+		DeduplicationFactor:              0.9,                      // 10% logical reduction
+		CompressionFactor:                0.7,                      // 30% physical reduction (1.4x Snappy)
 		MaxBackgroundJobs:                2,                        // 2 parallel compactions
 		MaxSubcompactions:                1,                        // No intra-compaction parallelism
 		IOLatencyMs:                      5.0,                      // 5ms seek time
@@ -283,8 +286,11 @@ func (c *SimConfig) Validate() error {
 	if c.L0CompactionTrigger < 2 {
 		return ErrInvalidConfig("l0CompactionTrigger must be >= 2")
 	}
-	if c.CompactionReductionFactor < 0.1 || c.CompactionReductionFactor > 1.0 {
-		return ErrInvalidConfig("compactionReductionFactor must be between 0.1 and 1.0")
+	if c.DeduplicationFactor < 0.1 || c.DeduplicationFactor > 1.0 {
+		return ErrInvalidConfig("deduplicationFactor must be between 0.1 and 1.0")
+	}
+	if c.CompressionFactor < 0.1 || c.CompressionFactor > 1.0 {
+		return ErrInvalidConfig("compressionFactor must be between 0.1 and 1.0")
 	}
 	if c.MaxBackgroundJobs < 1 {
 		return ErrInvalidConfig("maxBackgroundJobs must be >= 1")

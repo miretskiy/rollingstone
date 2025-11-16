@@ -1080,14 +1080,14 @@ func (s *Simulator) tryScheduleCompaction() bool {
 				subInputSize += f.SizeMB
 			}
 
-			// Apply reduction factor
-			var reductionFactor float64
+			// Apply reduction factors (deduplication + compression)
+			var deduplicationFactor float64
 			if job.FromLevel == 0 && job.ToLevel == 1 {
-				reductionFactor = s.config.CompactionReductionFactor
+				deduplicationFactor = s.config.DeduplicationFactor
 			} else {
-				reductionFactor = 0.99 // Minimal dedup for deeper levels
+				deduplicationFactor = 0.99 // Minimal dedup for deeper levels
 			}
-			subOutputSize := subInputSize * reductionFactor
+			subOutputSize := subInputSize * deduplicationFactor * s.config.CompressionFactor
 
 			// Calculate duration for this subcompaction
 			subIOTimeSec := (subInputSize + subOutputSize) / s.config.IOThroughputMBps
@@ -1116,14 +1116,14 @@ func (s *Simulator) tryScheduleCompaction() bool {
 			inputSize += f.SizeMB
 		}
 
-		// Apply reduction factor
-		var reductionFactor float64
+		// Apply reduction factors (deduplication + compression)
+		var deduplicationFactor float64
 		if job.FromLevel == 0 && job.ToLevel == 1 {
-			reductionFactor = s.config.CompactionReductionFactor
+			deduplicationFactor = s.config.DeduplicationFactor
 		} else {
-			reductionFactor = 0.99 // Minimal dedup for deeper levels
+			deduplicationFactor = 0.99 // Minimal dedup for deeper levels
 		}
-		outputSize = inputSize * reductionFactor
+		outputSize = inputSize * deduplicationFactor * s.config.CompressionFactor
 
 		// Calculate compaction duration: time to read input + write output
 		ioTimeSec := (inputSize + outputSize) / s.config.IOThroughputMBps

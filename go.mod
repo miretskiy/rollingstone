@@ -1,4 +1,4 @@
-module github.com/yevgeniy-miretskiy/rollingstone
+module github.com/miretskiy/rollingstone
 
 go 1.25.0
 

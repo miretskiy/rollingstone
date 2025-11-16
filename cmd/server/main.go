@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/yevgeniy-miretskiy/rollingstone/simulator"
+	"github.com/miretskiy/rollingstone/simulator"
 )
 
 var upgrader = websocket.Upgrader{

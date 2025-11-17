@@ -35,6 +35,7 @@ type Simulator struct {
 	stalledWriteBacklog     int                     // Number of writes waiting during stall (for OOM detection)
 	nextFlushCompletionTime float64                 // When the next flush that will clear the stall completes (0 if none scheduled)
 	trafficDistribution     TrafficDistribution     // Traffic distribution generator
+	rng                     *rand.Rand              // Random number generator (for read path modeling and other features)
 
 	// Event logging callback (optional, for UI/debugging)
 	LogEvent func(msg string)
@@ -68,6 +69,14 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 	// Create traffic distribution
 	trafficDist := NewTrafficDistribution(config.TrafficDistribution, config.RandomSeed)
 
+	// Create random number generator for read path modeling
+	var rng *rand.Rand
+	if config.RandomSeed == 0 {
+		rng = rand.New(rand.NewSource(rand.Int63()))
+	} else {
+		rng = rand.New(rand.NewSource(config.RandomSeed))
+	}
+
 	sim := &Simulator{
 		config:                  config,
 		lsm:                     lsm,
@@ -85,6 +94,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		stalledWriteBacklog:     0,
 		nextFlushCompletionTime: 0,
 		trafficDistribution:     trafficDist,
+		rng:                     rng,
 	}
 
 	// Note: Simulator starts in "dormant" state with no events scheduled
@@ -258,7 +268,7 @@ func (s *Simulator) Step() {
 		}
 
 		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps,
-			isStalled, stalledCount, s.config.MaxBackgroundJobs, s.config)
+			isStalled, stalledCount, s.config.MaxBackgroundJobs, s.config, s.rng)
 
 		// Invariant check: Queue should never be empty after initialization (unless OOM killed)
 		// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
@@ -1342,15 +1352,11 @@ func (s *Simulator) countStalledWrites() int {
 	return s.queue.CountWriteEvents()
 }
 
-// ActiveCompactions returns a list of levels currently being compacted
-// Gets data from pendingCompactions (compactor manages its own internal tracking)
-func (s *Simulator) ActiveCompactions() []int {
-	// Return levels that have pending compactions
-	active := make([]int, 0, len(s.pendingCompactions))
-	for level := range s.pendingCompactions {
-		active = append(active, level)
-	}
-	return active
+// ActiveCompactions returns the count of scheduled compactions (pending execution)
+// These compactions are scheduled and waiting for their turn to execute (up to maxBackgroundJobs)
+// Due to disk serialization (diskBusyUntil), only 1 executes at a time, but multiple can be scheduled
+func (s *Simulator) ActiveCompactions() int {
+	return len(s.pendingCompactions)
 }
 
 // logEvent sends a log message to both stdout and the UI (if callback is set)

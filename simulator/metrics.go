@@ -1,5 +1,10 @@
 package simulator
 
+import (
+	"log"
+	"math/rand"
+)
+
 // WriteActivity tracks a write event for throughput calculation
 type WriteActivity struct {
 	StartTime float64 // Virtual time when write started
@@ -61,12 +66,28 @@ type Metrics struct {
 	// Map of fromLevel -> stats for compactions that completed between UI updates
 	CompactionsSinceUpdate map[int]CompactionStats `json:"compactionsSinceUpdate"` // Per-level aggregate compaction activity
 
+	// Monotonic compaction counter (never reset, for rate calculation in UI)
+	TotalCompactionsCompleted int `json:"totalCompactionsCompleted"` // Total number of compactions completed since simulation start
+
 	// Write stall metrics
 	StalledWriteCount    int     `json:"stalledWriteCount"`    // Current number of WriteEvents queued during stall
 	MaxStalledWriteCount int     `json:"maxStalledWriteCount"` // Peak stalled write count seen
 	StallDurationSeconds float64 `json:"stallDurationSeconds"` // Cumulative time spent in stall state
 	IsStalled            bool    `json:"isStalled"`            // Whether currently in write stall state
 	IsOOMKilled          bool    `json:"isOOMKilled"`          // Whether simulation was killed due to OOM
+
+	// Read path metrics (statistical model - no discrete read events)
+	AvgReadLatencyMs     float64 `json:"avgReadLatencyMs"`     // Average read latency across all request types
+	P50ReadLatencyMs     float64 `json:"p50ReadLatencyMs"`     // P50 (median) read latency
+	P99ReadLatencyMs     float64 `json:"p99ReadLatencyMs"`     // P99 read latency
+	ReadBandwidthMBps    float64 `json:"readBandwidthMBps"`    // Disk bandwidth consumed by reads
+	CurrentReadReqsPerSec float64 `json:"currentReadReqsPerSec"` // Current actual read requests/sec (with variability applied)
+
+	// Read request type breakdown (requests per second)
+	CacheHitsPerSec      float64 `json:"cacheHitsPerSec"`      // Cache hits per second
+	BloomNegativesPerSec float64 `json:"bloomNegativesPerSec"` // Bloom filter negatives per second
+	ScansPerSec          float64 `json:"scansPerSec"`          // Range scans per second
+	PointLookupsPerSec   float64 `json:"pointLookupsPerSec"`   // Point lookups (cache miss) per second
 
 	// Internal tracking
 	totalDiskWrittenMB     float64         // Total bytes written to disk (including compaction)
@@ -116,6 +137,10 @@ func NewMetrics() *Metrics {
 		StallDurationSeconds:        0,
 		IsStalled:                   false,
 		IsOOMKilled:                 false,
+		AvgReadLatencyMs:            0,
+		P50ReadLatencyMs:            0,
+		P99ReadLatencyMs:            0,
+		ReadBandwidthMBps:           0,
 	}
 }
 
@@ -200,6 +225,9 @@ func (m *Metrics) RecordCompaction(inputSizeMB, outputSizeMB, startTime, endTime
 		stats.TotalInputMB += inputSizeMB
 		stats.TotalOutputMB += outputSizeMB
 		m.CompactionsSinceUpdate[fromLevel] = stats
+
+		// Increment monotonic counter (used for rate calculation in UI)
+		m.TotalCompactionsCompleted++
 		return
 	}
 
@@ -232,6 +260,9 @@ func (m *Metrics) RecordCompaction(inputSizeMB, outputSizeMB, startTime, endTime
 	stats.TotalInputMB += inputSizeMB
 	stats.TotalOutputMB += outputSizeMB
 	m.CompactionsSinceUpdate[fromLevel] = stats
+
+	// Increment monotonic counter (used for rate calculation in UI)
+	m.TotalCompactionsCompleted++
 }
 
 // ResetAggregateStats resets the aggregate compaction stats after a UI update
@@ -341,6 +372,195 @@ func (m *Metrics) UpdateReadAmplification(lsmTree *LSMTree, numMemtables int) {
 	if m.ReadAmplification < 1.0 {
 		m.ReadAmplification = 1.0
 	}
+}
+
+// UpdateReadMetrics calculates read latency and bandwidth using statistical model
+// This samples latency distributions to build p50/p99 statistics without discrete read events
+func (m *Metrics) UpdateReadMetrics(config *ReadWorkloadConfig, readAmp float64, blockSizeKB int, rng *rand.Rand) {
+	if config == nil {
+		// Read path modeling disabled - config is nil
+		m.AvgReadLatencyMs = 0
+		m.P50ReadLatencyMs = 0
+		m.P99ReadLatencyMs = 0
+		m.ReadBandwidthMBps = 0
+		m.CurrentReadReqsPerSec = 0
+		m.CacheHitsPerSec = 0
+		m.BloomNegativesPerSec = 0
+		m.ScansPerSec = 0
+		m.PointLookupsPerSec = 0
+		return
+	}
+	if !config.Enabled {
+		// Read path modeling disabled - Enabled=false
+		log.Printf("[READ METRICS] Read workload disabled: Enabled=%v, RequestsPerSec=%v", config.Enabled, config.RequestsPerSec)
+		m.AvgReadLatencyMs = 0
+		m.P50ReadLatencyMs = 0
+		m.P99ReadLatencyMs = 0
+		m.ReadBandwidthMBps = 0
+		m.CurrentReadReqsPerSec = 0
+		m.CacheHitsPerSec = 0
+		m.BloomNegativesPerSec = 0
+		m.ScansPerSec = 0
+		m.PointLookupsPerSec = 0
+		return
+	}
+	log.Printf("[READ METRICS] Computing read metrics: RequestsPerSec=%v, CacheHitRate=%v, ReadAmp=%v", config.RequestsPerSec, config.CacheHitRate, readAmp)
+
+	// Calculate actual request rate with variability
+	totalReqsPerSec := config.RequestsPerSec
+	if config.RequestRateVariability > 0 {
+		// Apply variability using normal distribution
+		// Coefficient of Variation (CV) = stddev / mean
+		// Generate normally distributed multiplier: N(1.0, CV^2)
+		// This keeps mean at RequestsPerSec while adding variability
+		multiplier := rng.NormFloat64()*config.RequestRateVariability + 1.0
+		// Ensure we don't go negative
+		if multiplier < 0.1 {
+			multiplier = 0.1
+		}
+		totalReqsPerSec = config.RequestsPerSec * multiplier
+		log.Printf("[READ METRICS] Applied variability: CV=%.2f, multiplier=%.2f, adjusted rate=%.0f", config.RequestRateVariability, multiplier, totalReqsPerSec)
+	}
+	cacheHitsPerSec := totalReqsPerSec * config.CacheHitRate
+	bloomNegPerSec := totalReqsPerSec * config.BloomNegativeRate
+	scansPerSec := totalReqsPerSec * config.ScanRate
+	pointLookupsPerSec := totalReqsPerSec - cacheHitsPerSec - bloomNegPerSec - scansPerSec
+	if pointLookupsPerSec < 0 {
+		pointLookupsPerSec = 0
+	}
+
+	// Store breakdown for UI display
+	m.CurrentReadReqsPerSec = totalReqsPerSec
+	m.CacheHitsPerSec = cacheHitsPerSec
+	m.BloomNegativesPerSec = bloomNegPerSec
+	m.ScansPerSec = scansPerSec
+	m.PointLookupsPerSec = pointLookupsPerSec
+
+	// Sample latencies to build distribution (1000 samples for good statistics)
+	const numSamples = 1000
+	latencies := make([]float64, 0, numSamples)
+
+	// Sample proportionally based on request type distribution
+	for i := 0; i < numSamples; i++ {
+		// Randomly select request type based on distribution
+		r := rng.Float64()
+		var latency float64
+
+		if r < config.CacheHitRate {
+			// Cache hit
+			latency = SampleLatency(config.CacheHitLatency, rng)
+		} else if r < config.CacheHitRate+config.BloomNegativeRate {
+			// Bloom filter negative
+			latency = SampleLatency(config.BloomNegativeLatency, rng)
+		} else if r < config.CacheHitRate+config.BloomNegativeRate+config.ScanRate {
+			// Range scan
+			latency = SampleLatency(config.ScanLatency, rng)
+		} else {
+			// Point lookup with cache miss - sample readAmp times, take max (parallel I/O)
+			readAmpInt := int(readAmp)
+			if readAmpInt < 1 {
+				readAmpInt = 1
+			}
+			maxLatency := 0.0
+			for j := 0; j < readAmpInt; j++ {
+				l := SampleLatency(config.PointLookupLatency, rng)
+				if l > maxLatency {
+					maxLatency = l
+				}
+			}
+			latency = maxLatency
+		}
+
+		latencies = append(latencies, latency)
+	}
+
+	// Sort latencies for percentile calculation
+	sortFloat64s(latencies)
+
+	// Calculate raw statistics
+	avgLatency := mean(latencies)
+	p50Latency := percentile(latencies, 0.50)
+	p99Latency := percentile(latencies, 0.99)
+
+	log.Printf("[READ METRICS] Raw Results: Avg=%.3f, P50=%.3f, P99=%.3f", avgLatency, p50Latency, p99Latency)
+
+	// Calculate disk bandwidth consumed by reads
+	// Cache hits and bloom negatives don't use disk I/O
+	// Point lookups read: blockSize * readAmp bytes per request
+	// Scans read: avgScanSizeKB bytes per request
+	blockSizeMB := float64(blockSizeKB) / 1024.0
+	scanSizeMB := config.AvgScanSizeKB / 1024.0
+
+	pointLookupBytes := pointLookupsPerSec * blockSizeMB * readAmp
+	scanBytes := scansPerSec * scanSizeMB
+	rawBandwidth := pointLookupBytes + scanBytes
+
+	// Apply EMA smoothing to read metrics (same as throughput metrics)
+	// Check if this is the first read metrics update (all values are 0)
+	if m.AvgReadLatencyMs == 0 && m.P50ReadLatencyMs == 0 && m.P99ReadLatencyMs == 0 && m.ReadBandwidthMBps == 0 {
+		// Initialize with first sample
+		m.AvgReadLatencyMs = avgLatency
+		m.P50ReadLatencyMs = p50Latency
+		m.P99ReadLatencyMs = p99Latency
+		m.ReadBandwidthMBps = rawBandwidth
+		log.Printf("[READ METRICS] Initialized: Avg=%.3f, P50=%.3f, P99=%.3f, BW=%.2f", m.AvgReadLatencyMs, m.P50ReadLatencyMs, m.P99ReadLatencyMs, m.ReadBandwidthMBps)
+	} else {
+		// Apply EMA smoothing: smoothed = alpha * new + (1-alpha) * previous
+		m.AvgReadLatencyMs = m.smoothingAlpha*avgLatency + (1-m.smoothingAlpha)*m.AvgReadLatencyMs
+		m.P50ReadLatencyMs = m.smoothingAlpha*p50Latency + (1-m.smoothingAlpha)*m.P50ReadLatencyMs
+		m.P99ReadLatencyMs = m.smoothingAlpha*p99Latency + (1-m.smoothingAlpha)*m.P99ReadLatencyMs
+		m.ReadBandwidthMBps = m.smoothingAlpha*rawBandwidth + (1-m.smoothingAlpha)*m.ReadBandwidthMBps
+		log.Printf("[READ METRICS] Smoothed: Avg=%.3f, P50=%.3f, P99=%.3f, BW=%.2f", m.AvgReadLatencyMs, m.P50ReadLatencyMs, m.P99ReadLatencyMs, m.ReadBandwidthMBps)
+	}
+}
+
+// Helper functions for statistics
+
+func sortFloat64s(slice []float64) {
+	// Simple insertion sort (good enough for 1000 samples)
+	for i := 1; i < len(slice); i++ {
+		key := slice[i]
+		j := i - 1
+		for j >= 0 && slice[j] > key {
+			slice[j+1] = slice[j]
+			j--
+		}
+		slice[j+1] = key
+	}
+}
+
+func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range values {
+		sum += v
+	}
+	return sum / float64(len(values))
+}
+
+func percentile(sortedValues []float64, p float64) float64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sortedValues[0]
+	}
+	if p >= 1 {
+		return sortedValues[len(sortedValues)-1]
+	}
+
+	// Linear interpolation between closest ranks
+	rank := p * float64(len(sortedValues)-1)
+	lowerIdx := int(rank)
+	upperIdx := lowerIdx + 1
+	if upperIdx >= len(sortedValues) {
+		return sortedValues[lowerIdx]
+	}
+
+	fraction := rank - float64(lowerIdx)
+	return sortedValues[lowerIdx]*(1-fraction) + sortedValues[upperIdx]*fraction
 }
 
 // calculateThroughput calculates INSTANTANEOUS write throughput
@@ -616,10 +836,11 @@ func (m *Metrics) CapThroughput(maxThroughputMBps float64) {
 
 // Update updates the timestamp and recalculates metrics
 func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int, diskBusyUntil float64, ioThroughputMBps float64,
-	isStalled bool, stalledWriteCount int, maxBackgroundJobs int, config SimConfig) {
+	isStalled bool, stalledWriteCount int, maxBackgroundJobs int, config SimConfig, rng *rand.Rand) {
 	m.Timestamp = virtualTime
 	m.UpdateSpaceAmplification(lsmTree.TotalSizeMB, lsmTree)
 	m.UpdateReadAmplification(lsmTree, numMemtables)
+	m.UpdateReadMetrics(config.ReadWorkload, m.ReadAmplification, config.BlockSizeKB, rng)
 	m.calculateThroughput()
 	m.CapThroughput(ioThroughputMBps) // Enforce physical disk limits
 

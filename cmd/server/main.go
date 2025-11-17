@@ -480,6 +480,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					safeConn.WriteJSON(errorMsg)
 				} else {
 					log.Printf("Config updated: %+v", msg.Config)
+					if msg.Config.ReadWorkload != nil {
+						log.Printf("[READ WORKLOAD] Enabled=%v, RequestsPerSec=%v, CacheHitRate=%v", msg.Config.ReadWorkload.Enabled, msg.Config.ReadWorkload.RequestsPerSec, msg.Config.ReadWorkload.CacheHitRate)
+					} else {
+						log.Printf("[READ WORKLOAD] Config is nil")
+					}
 					running := state.isRunning()
 					updatedFullConfig := state.getConfig()
 					statusMsg := ServerMessage{

@@ -1,8 +1,34 @@
 import { TrendingUp, Activity, Database, Clock, ArrowDown, HardDrive } from 'lucide-react';
 import { useStore } from '../store';
+import { useRef, useEffect, useState } from 'react';
 
 export function MetricsDashboard() {
     const { currentMetrics, currentState, config } = useStore();
+
+    // Track compaction rate (compactions per second)
+    const prevCompactionCount = useRef<number | null>(null);
+    const prevCompactionTime = useRef<number | null>(null);
+    const [compactionRate, setCompactionRate] = useState<number>(0);
+
+    useEffect(() => {
+        const currentCount = currentMetrics?.totalCompactionsCompleted;
+        const currentTime = currentMetrics?.timestamp;
+
+        if (currentCount !== undefined && currentTime !== undefined) {
+            if (prevCompactionCount.current !== null && prevCompactionTime.current !== null) {
+                const deltaCount = currentCount - prevCompactionCount.current;
+                const deltaTime = currentTime - prevCompactionTime.current;
+
+                if (deltaTime > 0) {
+                    const rate = deltaCount / deltaTime;
+                    setCompactionRate(rate);
+                }
+            }
+
+            prevCompactionCount.current = currentCount;
+            prevCompactionTime.current = currentTime;
+        }
+    }, [currentMetrics?.totalCompactionsCompleted, currentMetrics?.timestamp]);
     
     // Get incoming write rate from state (current rate) or config (fallback)
     const getIncomingRate = () => {
@@ -59,8 +85,8 @@ export function MetricsDashboard() {
         return `${(mb / (1024 * 1024)).toFixed(1)} TB`;
     };
 
-    // Count total active compactions across all levels
-    const activeCompactionCount = currentState?.activeCompactions?.length ?? 0;
+    // Get instantaneous active compaction count (for color/animation)
+    const activeCompactionCount = currentState?.activeCompactions ?? 0;
 
     return (
         <div className="space-y-6">
@@ -90,19 +116,19 @@ export function MetricsDashboard() {
                     </div>
                 </div>
                 
-                {/* Active Compactions */}
+                {/* Compaction Rate */}
                 <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                            <Activity className={`w-4 h-4 ${activeCompactionCount > 0 ? 'text-yellow-400 animate-pulse' : 'text-gray-500'}`} />
-                            <span className="text-sm text-gray-400">Active Compactions</span>
+                            <Activity className={`w-4 h-4 ${compactionRate > 0 ? 'text-yellow-400 animate-pulse' : 'text-gray-500'}`} />
+                            <span className="text-sm text-gray-400">Compaction Rate</span>
                         </div>
                     </div>
-                    <div className={`text-3xl font-bold ${activeCompactionCount > 0 ? 'text-yellow-400' : 'text-gray-500'}`}>
-                        {activeCompactionCount}
+                    <div className={`text-3xl font-bold ${compactionRate > 0 ? 'text-yellow-400' : 'text-gray-500'}`}>
+                        {compactionRate.toFixed(1)}
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                        {activeCompactionCount > 0 ? `${config.maxBackgroundJobs} max parallel` : 'Idle'}
+                        {compactionRate > 0 ? `comp/sec (${activeCompactionCount} active)` : 'Idle'}
                     </div>
                 </div>
 
@@ -209,6 +235,121 @@ export function MetricsDashboard() {
                     </div>
                 </div>
 
+                {/* Read Path Metrics (only show if read path modeling is enabled) */}
+                {config?.readWorkload?.enabled && currentMetrics?.avgReadLatencyMs !== undefined && (
+                    <>
+                        {/* Read Requests per Second */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-indigo-400" />
+                                    <span className="text-sm text-gray-400">Read Requests/sec</span>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-bold text-indigo-400">
+                                {currentMetrics.currentReadReqsPerSec !== undefined
+                                    ? currentMetrics.currentReadReqsPerSec.toFixed(0)
+                                    : config.readWorkload.requestsPerSec.toFixed(0)}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                                Current rate (with variability)
+                            </div>
+                        </div>
+
+                        {/* Read Bandwidth */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-sky-400" />
+                                    <span className="text-sm text-gray-400">Read Bandwidth</span>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-bold text-sky-400">
+                                {currentMetrics.readBandwidthMBps !== undefined ? currentMetrics.readBandwidthMBps.toFixed(2) : '--'}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                                MB/s from disk
+                            </div>
+                        </div>
+
+                        {/* Average Read Latency */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-cyan-400" />
+                                    <span className="text-sm text-gray-400">Avg Read Latency</span>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-bold text-cyan-400">
+                                {currentMetrics.avgReadLatencyMs.toFixed(2)} ms
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                                Mean response time
+                            </div>
+                        </div>
+
+                        {/* P50 Read Latency */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-green-400" />
+                                    <span className="text-sm text-gray-400">P50 Read Latency</span>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-bold text-green-400">
+                                {currentMetrics.p50ReadLatencyMs !== undefined ? currentMetrics.p50ReadLatencyMs.toFixed(3) : '--'} ms
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                                Median response time
+                            </div>
+                        </div>
+
+                        {/* P99 Read Latency */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-yellow-400" />
+                                    <span className="text-sm text-gray-400">P99 Read Latency</span>
+                                </div>
+                            </div>
+                            <div className="text-3xl font-bold text-yellow-400">
+                                {currentMetrics.p99ReadLatencyMs !== undefined ? currentMetrics.p99ReadLatencyMs.toFixed(2) : '--'} ms
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                                99th percentile
+                            </div>
+                        </div>
+
+                        {/* Read Request Type Breakdown */}
+                        <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg col-span-2">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-purple-400" />
+                                    <span className="text-sm text-gray-400">Read Request Breakdown</span>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-400">Cache Hits:</span>
+                                    <span className="text-green-400 font-semibold">{currentMetrics.cacheHitsPerSec?.toFixed(0) ?? '--'} req/s</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-400">Bloom Negatives:</span>
+                                    <span className="text-blue-400 font-semibold">{currentMetrics.bloomNegativesPerSec?.toFixed(0) ?? '--'} req/s</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-400">Point Lookups:</span>
+                                    <span className="text-yellow-400 font-semibold">{currentMetrics.pointLookupsPerSec?.toFixed(0) ?? '--'} req/s</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-400">Range Scans:</span>
+                                    <span className="text-cyan-400 font-semibold">{currentMetrics.scansPerSec?.toFixed(0) ?? '--'} req/s</span>
+                                </div>
+                            </div>
+                        </div>
+                    </>
+                )}
+
                 {/* Space Amplification */}
                 <div className="bg-dark-card border border-dark-border rounded-lg p-4 shadow-lg">
                     <div className="flex items-center justify-between mb-2">
@@ -295,9 +436,9 @@ export function MetricsDashboard() {
                                 {currentMetrics.inProgressCount} active {currentMetrics.inProgressCount === 1 ? 'write' : 'writes'}
                             </div>
                         )}
-                        {currentState?.activeCompactions && currentState.activeCompactions.length > 0 && (
+                        {currentState?.activeCompactionInfos && currentState.activeCompactionInfos.length > 0 && (
                             <div className="text-sm text-gray-400">
-                                Compacting: {currentState.activeCompactions.map(l => `L${l}`).join(', ')}
+                                Compacting: {currentState.activeCompactionInfos.map(info => `L${info.fromLevel}→L${info.toLevel}`).join(', ')}
                             </div>
                         )}
                     </div>

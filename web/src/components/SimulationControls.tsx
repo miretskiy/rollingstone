@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Play, Pause, RotateCcw, Settings, ChevronDown, ChevronRight, AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
 import { useStore } from '../store';
-import type { SimulationConfig } from '../types';
+import type { SimulationConfig, ReadWorkloadConfig } from '../types';
 import { ConfigInput } from './ConfigInput';
 
 // Helper component for number inputs with local state (allows editing)
@@ -80,7 +80,6 @@ export function SimulationControls() {
   const bufferCapacityMB = useStore(state => state.config.maxStalledWriteMemoryMB) || 4096;
   const compactionStyle = useStore(state => state.config.compactionStyle) || 'universal';
   const levelCompactionDynamicLevelBytes = useStore(state => state.config.levelCompactionDynamicLevelBytes) || false;
-  const trafficModel = useStore(state => state.config.trafficDistribution?.model) || 'constant';
   const overlapDistTypeRaw = useStore(state => state.config.overlapDistribution?.type);
   const overlapDistType = (overlapDistTypeRaw === 'uniform' || overlapDistTypeRaw === 'exponential' || overlapDistTypeRaw === 'geometric' || overlapDistTypeRaw === 'fixed') 
     ? overlapDistTypeRaw 
@@ -88,8 +87,8 @@ export function SimulationControls() {
   
   // Extract all traffic distribution values (must be at top level for hooks)
   const trafficDist = useStore(state => state.config.trafficDistribution);
-  const baseRateMBps = trafficDist?.baseRateMBps || 10.0;
-  const burstMultiplier = trafficDist?.burstMultiplier || 2.0;
+  // const baseRateMBps = trafficDist?.baseRateMBps || 10.0; // Will be needed for Advanced Traffic Parameters
+  const burstMultiplier = trafficDist?.burstMultiplier || 0;
   const lognormalSigma = trafficDist?.lognormalSigma || 0.1;
   const onMeanSeconds = trafficDist?.onMeanSeconds || 5.0;
   const offMeanSeconds = trafficDist?.offMeanSeconds || 10.0;
@@ -98,6 +97,22 @@ export function SimulationControls() {
   const spikeMeanDur = trafficDist?.spikeMeanDur || 1.0;
   const spikeAmplitudeMean = trafficDist?.spikeAmplitudeMean || 1.0;
   const spikeAmplitudeSigma = trafficDist?.spikeAmplitudeSigma || 0.5;
+
+  // Helper function to ensure all required ReadWorkloadConfig fields are present
+  const getCompleteReadWorkload = (partial: Partial<ReadWorkloadConfig> = {}): ReadWorkloadConfig => {
+    return {
+      enabled: true,
+      requestsPerSec: partial.requestsPerSec ?? readWorkload?.requestsPerSec ?? 1000,
+      cacheHitRate: partial.cacheHitRate ?? readWorkload?.cacheHitRate ?? 0.90,
+      bloomNegativeRate: partial.bloomNegativeRate ?? readWorkload?.bloomNegativeRate ?? 0.02,
+      scanRate: partial.scanRate ?? readWorkload?.scanRate ?? 0.05,
+      cacheHitLatency: partial.cacheHitLatency ?? readWorkload?.cacheHitLatency ?? { distribution: 'fixed', mean: 0.001 },
+      bloomNegativeLatency: partial.bloomNegativeLatency ?? readWorkload?.bloomNegativeLatency ?? { distribution: 'fixed', mean: 0.01 },
+      pointLookupLatency: partial.pointLookupLatency ?? readWorkload?.pointLookupLatency ?? { distribution: 'exponential', mean: 2.0 },
+      scanLatency: partial.scanLatency ?? readWorkload?.scanLatency ?? { distribution: 'lognormal', mean: 10.0 },
+      avgScanSizeKB: partial.avgScanSizeKB ?? readWorkload?.avgScanSizeKB ?? 16.0,
+    };
+  };
   const capacityLimitMB = trafficDist?.capacityLimitMB || 0;
 
   // WAL configuration (must be at top level for hooks)
@@ -105,18 +120,15 @@ export function SimulationControls() {
   const walSync = useStore(state => state.config.walSync ?? true);
   const queueMode = trafficDist?.queueMode || 'drop';
 
-  // Compression configuration (must be at top level for hooks)
-  const compressionFactor = useStore(state => state.config.compressionFactor) || 0.85;
-  const compressionThroughputMBps = useStore(state => state.config.compressionThroughputMBps) || 750;
-  const decompressionThroughputMBps = useStore(state => state.config.decompressionThroughputMBps) || 3700;
-  const blockSizeKB = useStore(state => state.config.blockSizeKB) || 4;
-  
   // Extract all overlap distribution values
   const overlapDist = useStore(state => state.config.overlapDistribution);
   const geometricP = overlapDist?.geometricP || 0.3;
   const exponentialLambda = overlapDist?.exponentialLambda || 0.5;
   const fixedPercentage = overlapDist?.fixedPercentage ?? 0.5; // Default to 0.5 if not set
-  
+
+  // Read workload configuration
+  const readWorkload = useStore(state => state.config.readWorkload);
+
   // Calculate max sustainable rate from config OR from actual metrics if available
   // Use actual metrics if simulation is running and has data, otherwise use theoretical estimate
   let maxSustainableRate: number | undefined;
@@ -155,11 +167,29 @@ export function SimulationControls() {
   }
   
   const isExceedingSustainable = maxSustainableRate !== undefined && maxSustainableRate > 0 && writeRate > maxSustainableRate;
+
+  // Read compression config for preset detection
+  const compressionFactor = useStore(state => state.config.compressionFactor ?? 0.85);
+  const compressionThroughputMBps = useStore(state => state.config.compressionThroughputMBps ?? 750);
+  const decompressionThroughputMBps = useStore(state => state.config.decompressionThroughputMBps ?? 3700);
+
+  // Detect active compression preset
+  const getCompressionPreset = (): string => {
+    if (Math.abs(compressionFactor - 0.85) < 0.01 && Math.abs(compressionThroughputMBps - 750) < 10 && Math.abs(decompressionThroughputMBps - 3700) < 10) return 'lz4';
+    if (Math.abs(compressionFactor - 0.83) < 0.01 && Math.abs(compressionThroughputMBps - 530) < 10 && Math.abs(decompressionThroughputMBps - 1800) < 10) return 'snappy';
+    if (Math.abs(compressionFactor - 0.70) < 0.01 && Math.abs(compressionThroughputMBps - 470) < 10 && Math.abs(decompressionThroughputMBps - 1380) < 10) return 'zstd';
+    if (Math.abs(compressionFactor - 1.0) < 0.01 && compressionThroughputMBps === 0 && decompressionThroughputMBps === 0) return 'none';
+    return 'custom';
+  };
+
   const [expandedSections, setExpandedSections] = useState({
     lsm: true,
     lsmAdvanced: false,
     workload: true,
     workloadAdvanced: false,
+    compression: false,
+    readWorkload: false,
+    readWorkloadAdvanced: false,
     io: false,
     simulation: false,
   });
@@ -395,473 +425,118 @@ export function SimulationControls() {
             tabIndex={-1}
             className="w-full flex items-center justify-between p-3 bg-dark-bg hover:bg-gray-800 transition-colors"
           >
-            <h3 className="font-semibold text-sm">Workload & Traffic Pattern</h3>
+            <h3 className="font-semibold text-sm">Write Traffic Model</h3>
             {expandedSections.workload ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </button>
           {expandedSections.workload && (
             <div className="p-3 bg-dark-card">
-              {/* Traffic Model Selector */}
-              <div className="mb-3">
-                <div className="flex items-center gap-2 mb-3">
-                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
-                    Traffic Model
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                {/* Write Rate - custom input to handle both writeRateMBps and trafficDistribution.baseRateMBps */}
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-sm text-gray-300 flex items-center gap-1 flex-1 min-w-0">
+                    Write Rate ({sustainableRangeStr ? `MB/s; max ${sustainableRangeStr}` : "MB/s"})
                     <div className="group relative">
                       <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
-                        Choose traffic distribution model: Constant Rate (simple) or Advanced (ON/OFF with spikes)
+                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                        {`Incoming write throughput${burstMultiplier > 0 ? ' (base rate during quiet periods)' : ''} (0 = no writes)${sustainableRangeStr ? `\n\nSustainable rate range: ${sustainableRangeStr} MB/s` : ''}`}
                       </div>
                     </div>
-                  </h4>
-                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({ 
-                        trafficDistribution: {
-                          model: 'constant',
-                          writeRateMBps: writeRate,
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    step={0.1}
+                    value={writeRate}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val)) {
+                        const clamped = Math.max(0, Math.min(1000, val));
+                        // Update both writeRateMBps and trafficDistribution.baseRateMBps if advanced model
+                        if (trafficDist?.model === 'advanced') {
+                          updateConfig({
+                            writeRateMBps: clamped,
+                            trafficDistribution: {
+                              ...trafficDist,
+                              baseRateMBps: clamped,
+                            }
+                          });
+                        } else {
+                          updateConfig({
+                            writeRateMBps: clamped,
+                            trafficDistribution: {
+                              model: 'constant',
+                              writeRateMBps: clamped,
+                            }
+                          });
                         }
-                      });
+                      }
                     }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      trafficModel === 'constant'
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    Constant Rate
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({ 
-                        trafficDistribution: {
-                          model: 'advanced',
-                          baseRateMBps: writeRate,
-                          burstMultiplier: 2.0,
-                          lognormalSigma: 0.1,
-                          onMeanSeconds: 5.0,
-                          offMeanSeconds: 10.0,
-                          erlangK: 2,
-                          spikeRatePerSec: 0.1,
-                          spikeMeanDur: 1.0,
-                          spikeAmplitudeMean: 1.0,
-                          spikeAmplitudeSigma: 0.5,
-                          capacityLimitMB: 0,
-                          queueMode: 'drop',
-                        }
-                      });
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      trafficModel === 'advanced'
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    Advanced (ON/OFF + Spikes)
-                  </button>
+                    disabled={!isConnected}
+                    className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                {trafficModel === 'constant' ? (
-                  <ConfigInput 
-                    label="Write Rate" 
-                    field="writeRateMBps" 
-                    min={0} 
-                    max={1000} 
-                    unit={sustainableRangeStr ? `MB/s; max ${sustainableRangeStr}` : "MB/s"}
-                    tooltip={`Incoming write throughput (0 = no writes)${sustainableRangeStr ? `\n\nSustainable rate range: ${sustainableRangeStr} MB/s\n\nThis range accounts for:\n• Conservative estimate (upper bound): Average compaction overhead\n• Worst-case estimate (lower bound): Buffer capacity during worst-case compaction bursts\n\nSee detailed explanation below for worst-case scenarios.` : ''}`} />
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-sm text-gray-300 flex items-center gap-1 flex-1 min-w-0">
-                        Base Rate (MB/s)
-                        <div className="group relative">
-                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                            Average write rate during normal operation (quiet periods). This is the baseline traffic level before bursts or spikes.
-                          </div>
-                        </div>
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={1000}
-                        
-                        value={baseRateMBps}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (!isNaN(val)) {
-                            updateConfig({
-                              trafficDistribution: {
-                                ...trafficDist,
-                                model: 'advanced',
-                                baseRateMBps: Math.max(0, Math.min(1000, val)),
-                              }
-                            });
-                          }
-                        }}
-                        disabled={!isConnected || isRunning}
-                        className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-sm text-gray-300 flex items-center gap-1 flex-1 min-w-0">
+                    Burstiness
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                        Traffic burst multiplier. 0 = constant rate (no bursts). Values ≥ 2.0 enable advanced traffic model with ON/OFF periods and spikes. Example: 2.0 = traffic doubles during burst periods.
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="text-sm text-gray-300 flex items-center gap-1 flex-1 min-w-0">
-                        Burstiness
-                        <div className="group relative">
-                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                            How much faster traffic is during bursts compared to baseline. For example, 2.0 means traffic doubles during burst periods (ON state).
-                          </div>
-                        </div>
-                      </label>
-                      <input
-                        type="number"
-                        min={1.0}
-                        max={10.0}
-                        
-                        value={burstMultiplier}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (!isNaN(val)) {
-                            updateConfig({
-                              trafficDistribution: {
-                                ...trafficDist,
-                                model: 'advanced',
-                                burstMultiplier: Math.max(1.0, Math.min(10.0, val)),
-                              }
-                            });
-                          }
-                        }}
-                        disabled={!isConnected || isRunning}
-                        className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </div>
-                  </>
-                )}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10.0}
+                    step={0.1}
+                    value={burstMultiplier}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val)) {
+                        const clampedVal = Math.max(0, Math.min(10.0, val));
+                        if (clampedVal === 0) {
+                          updateConfig({
+                            trafficDistribution: {
+                              model: 'constant',
+                              writeRateMBps: writeRate,
+                            }
+                          });
+                        } else {
+                          updateConfig({
+                            trafficDistribution: {
+                              ...(trafficDist || {}),
+                              model: 'advanced',
+                              baseRateMBps: writeRate,
+                              burstMultiplier: clampedVal,
+                              lognormalSigma: trafficDist?.lognormalSigma || 0.1,
+                              onMeanSeconds: trafficDist?.onMeanSeconds || 5.0,
+                              offMeanSeconds: trafficDist?.offMeanSeconds || 10.0,
+                              erlangK: trafficDist?.erlangK || 2,
+                              spikeRatePerSec: trafficDist?.spikeRatePerSec || 0.1,
+                              spikeMeanDur: trafficDist?.spikeMeanDur || 1.0,
+                              spikeAmplitudeMean: trafficDist?.spikeAmplitudeMean || 1.0,
+                              spikeAmplitudeSigma: trafficDist?.spikeAmplitudeSigma || 0.5,
+                              capacityLimitMB: trafficDist?.capacityLimitMB || 0,
+                              queueMode: trafficDist?.queueMode || 'drop',
+                            }
+                          });
+                        }
+                      }
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+
                 <ConfigInput label="Deduplication Factor" field="deduplicationFactor" min={0.1} max={1.0}
                   tooltip="Logical size after deduplication (0.9 = 10% from tombstones/overwrites, 1.0 = no dedup)" />
               </div>
 
-              {/* Compression Configuration */}
-              <div className="mt-4 mb-3">
-                <div className="flex items-center gap-2 mb-3">
-                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
-                    Compression
-                    <div className="group relative">
-                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-72 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
-                        Compression settings affect physical storage size, CPU overhead, and operation latency. Compression/decompression adds CPU time to compaction and flush operations, which is modeled additively (compress → write → seek). Slower compression speeds increase compaction duration. Choose a preset algorithm or customize parameters for your workload.
-                      </div>
-                    </div>
-                  </h4>
-                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
-                </div>
-                <div className="flex gap-2 mb-3">
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({
-                        compressionFactor: 0.85,
-                        compressionThroughputMBps: 750,
-                        decompressionThroughputMBps: 3700,
-                        blockSizeKB: 4,
-                      });
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      Math.abs(compressionFactor - 0.85) < 0.01 &&
-                      Math.abs(compressionThroughputMBps - 750) < 10 &&
-                      Math.abs(decompressionThroughputMBps - 3700) < 10 &&
-                      blockSizeKB === 4
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    LZ4
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({
-                        compressionFactor: 0.83,
-                        compressionThroughputMBps: 530,
-                        decompressionThroughputMBps: 1800,
-                        blockSizeKB: 4,
-                      });
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      Math.abs(compressionFactor - 0.83) < 0.01 &&
-                      Math.abs(compressionThroughputMBps - 530) < 10 &&
-                      Math.abs(decompressionThroughputMBps - 1800) < 10 &&
-                      blockSizeKB === 4
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    Snappy
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({
-                        compressionFactor: 0.70,
-                        compressionThroughputMBps: 470,
-                        decompressionThroughputMBps: 1380,
-                        blockSizeKB: 4,
-                      });
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      Math.abs(compressionFactor - 0.70) < 0.01 &&
-                      Math.abs(compressionThroughputMBps - 470) < 10 &&
-                      Math.abs(decompressionThroughputMBps - 1380) < 10 &&
-                      blockSizeKB === 4
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    Zstd
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!isConnected || isRunning) return;
-                      updateConfig({
-                        compressionFactor: 1.0,
-                        compressionThroughputMBps: 0,
-                        decompressionThroughputMBps: 0,
-                        blockSizeKB: 4,
-                      });
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
-                      Math.abs(compressionFactor - 1.0) < 0.01 &&
-                      compressionThroughputMBps === 0 &&
-                      decompressionThroughputMBps === 0
-                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
-                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                  >
-                    None
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  <ConfigInput
-                    label="Compression Factor"
-                    field="compressionFactor"
-                    min={0.1}
-                    max={1.0}
-                    tooltip="Physical size after compression (0.85 = 15% reduction with LZ4, 0.70 = 30% with Zstd, 1.0 = no compression)" />
-                  <ConfigInput
-                    label="Block Size"
-                    field="blockSizeKB"
-                    min={1}
-                    max={64}
-                    unit="KB"
-                    tooltip="SST block size (RocksDB default: 4 KB). Larger blocks improve compression ratio but increase bytes read/decompressed per key lookup. Smaller blocks reduce per-read overhead but compress less efficiently." />
-                  <ConfigInput
-                    label="Compression Speed"
-                    field="compressionThroughputMBps"
-                    min={0}
-                    max={5000}
-                    unit="MB/s"
-                    tooltip="CPU throughput for compression (0 = infinite/no CPU cost). LZ4: 750 MB/s, Snappy: 530 MB/s, Zstd: 470 MB/s (single-threaded)" />
-                  <ConfigInput
-                    label="Decompression Speed"
-                    field="decompressionThroughputMBps"
-                    min={0}
-                    max={10000}
-                    unit="MB/s"
-                    tooltip="CPU throughput for decompression (0 = infinite/no CPU cost). LZ4: 3700 MB/s, Snappy: 1800 MB/s, Zstd: 1380 MB/s (single-threaded)" />
-                </div>
-              </div>
-              
-              {/* Overlap Distribution Controls */}
-              <div className="mt-4 mb-3">
-                <div className="flex items-center gap-2 mb-3">
-                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
-                    Overlap Distribution
-                    <div className="group relative">
-                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
-                        Controls how many overlapping files are selected from the target level during compaction. This affects write amplification and compaction size. The overlap pattern depends on your workload: uniform writes create many overlaps, skewed workloads create fewer. Uniform: equal probability for any overlap count. Geometric: favors fewer overlaps (good for balanced workloads). Exponential: strongly favors fewer overlaps (good for skewed workloads).
-                      </div>
-                    </div>
-                  </h4>
-                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
-                </div>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <select
-                    value={overlapDistType}
-                    onChange={(e) => {
-                      try {
-                        if (!isConnected || isRunning) return;
-                        const newType = e.target.value as "uniform" | "exponential" | "geometric" | "fixed";
-                        console.log('[OverlapDist] Changing type to:', newType, 'current overlapDist:', overlapDist);
-                        
-                        // Ensure we have a valid overlapDist object with all required fields
-                        const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5, fixedPercentage: 0.5 };
-                        
-                        // Create new overlap distribution config
-                        const newOverlapDist: { type: "uniform" | "exponential" | "geometric" | "fixed"; geometricP?: number; exponentialLambda?: number; fixedPercentage?: number } = {
-                          type: newType,
-                          // Preserve existing parameters (they're optional, so only include if they exist)
-                          ...(currentOverlapDist.geometricP !== undefined && { geometricP: currentOverlapDist.geometricP }),
-                          ...(currentOverlapDist.exponentialLambda !== undefined && { exponentialLambda: currentOverlapDist.exponentialLambda }),
-                          ...(currentOverlapDist.fixedPercentage !== undefined && { fixedPercentage: currentOverlapDist.fixedPercentage }),
-                        };
-                        
-                        // Ensure defaults are set for the selected type
-                        if (newType === 'geometric' && newOverlapDist.geometricP === undefined) {
-                          newOverlapDist.geometricP = 0.3;
-                        }
-                        if (newType === 'exponential' && newOverlapDist.exponentialLambda === undefined) {
-                          newOverlapDist.exponentialLambda = 0.5;
-                        }
-                        if (newType === 'fixed' && newOverlapDist.fixedPercentage === undefined) {
-                          newOverlapDist.fixedPercentage = 0.5;
-                        }
-                        
-                        console.log('[OverlapDist] New config:', newOverlapDist);
-                        
-                        updateConfig({
-                          overlapDistribution: newOverlapDist
-                        });
-                      } catch (error) {
-                        console.error('[OverlapDist] Error changing distribution type:', error);
-                        alert(`Error changing overlap distribution: ${error instanceof Error ? error.message : String(error)}`);
-                      }
-                    }}
-                    disabled={!isConnected || isRunning}
-                    className="px-3 py-1.5 bg-dark-bg border border-dark-border rounded text-sm text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    <option value="uniform">Uniform</option>
-                    <option value="exponential">Exponential</option>
-                    <option value="geometric">Geometric</option>
-                    <option value="fixed">Fixed</option>
-                  </select>
-                  {overlapDistType === 'geometric' && (
-                    <>
-                      <label className="text-xs text-gray-400 flex items-center gap-1">
-                        Bias:
-                        <div className="group relative">
-                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                            Geometric distribution success probability (P). Controls bias toward fewer overlaps. Higher values (0.5-0.9) = stronger bias toward 1 overlap. Lower values (0.1-0.3) = more balanced distribution. Default: 0.3 means 30% chance of 1 overlap, 21% chance of 2 overlaps, 14.7% chance of 3 overlaps, etc. (probability decreases geometrically as overlap count increases). Note: 0 overlaps (trivial moves) are handled separately and not part of this distribution.
-                          </div>
-                        </div>
-                      </label>
-                      <NumberInput
-                        value={geometricP}
-                        onChange={(val) => {
-                          try {
-                            const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
-                            const clampedVal = Math.max(0.1, Math.min(0.9, val));
-                            console.log('[OverlapDist] Updating geometricP to:', clampedVal);
-                            updateConfig({
-                              overlapDistribution: {
-                                ...currentOverlapDist,
-                                type: 'geometric',
-                                geometricP: clampedVal,
-                              }
-                            });
-                          } catch (error) {
-                            console.error('[OverlapDist] Error updating geometricP:', error);
-                            alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
-                          }
-                        }}
-                        min={0.1}
-                        max={0.9}
-                        disabled={!isConnected || isRunning}
-                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </>
-                  )}
-                  {overlapDistType === 'exponential' && (
-                    <>
-                      <label className="text-xs text-gray-400 flex items-center gap-1">
-                        Bias:
-                        <div className="group relative">
-                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                            Exponential distribution rate parameter (Lambda). Controls bias toward fewer overlaps. Higher values (1.0-2.0) = stronger bias toward 1 overlap. Lower values (0.1-0.5) = more balanced distribution. Default: 0.5.
-                          </div>
-                        </div>
-                      </label>
-                      <NumberInput
-                        value={exponentialLambda}
-                        onChange={(val) => {
-                          try {
-                            const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
-                            const clampedVal = Math.max(0.1, Math.min(2.0, val));
-                            console.log('[OverlapDist] Updating exponentialLambda to:', clampedVal);
-                            updateConfig({
-                              overlapDistribution: {
-                                ...currentOverlapDist,
-                                type: 'exponential',
-                                exponentialLambda: clampedVal,
-                              }
-                            });
-                          } catch (error) {
-                            console.error('[OverlapDist] Error updating exponentialLambda:', error);
-                            alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
-                          }
-                        }}
-                        min={0.1}
-                        max={2.0}
-                        disabled={!isConnected || isRunning}
-                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </>
-                  )}
-                  {overlapDistType === 'fixed' && (
-                    <>
-                      <label className="text-xs text-gray-400 flex items-center gap-1">
-                        Percentage:
-                        <div className="group relative">
-                          <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                          <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                            Fixed percentage of files from the target level that overlap. 0.0 = no overlaps (trivial moves only), 1.0 = all files overlap, 0.5 = 50% of files overlap. This provides deterministic overlap selection instead of probabilistic distributions.
-                          </div>
-                        </div>
-                      </label>
-                      <NumberInput
-                        value={fixedPercentage}
-                        onChange={(val) => {
-                          try {
-                            const currentOverlapDist = overlapDist || { type: 'fixed', fixedPercentage: 0.5 };
-                            const clampedVal = Math.max(0.0, Math.min(1.0, val));
-                            console.log('[OverlapDist] Updating fixedPercentage to:', clampedVal);
-                            updateConfig({
-                              overlapDistribution: {
-                                ...currentOverlapDist,
-                                type: 'fixed',
-                                fixedPercentage: clampedVal,
-                              }
-                            });
-                          } catch (error) {
-                            console.error('[OverlapDist] Error updating fixedPercentage:', error);
-                            alert(`Error updating percentage: ${error instanceof Error ? error.message : String(error)}`);
-                          }
-                        }}
-                        min={0.0}
-                        max={1.0}
-                        disabled={!isConnected || isRunning}
-                        className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
-              
-              {/* Advanced Traffic Parameters (collapsible) */}
-              {trafficModel === 'advanced' && (
+              {/* Advanced Traffic Parameters (collapsible) - only show when burstiness > 0 */}
+              {burstMultiplier > 0 && (
                 <div className="mt-3 border border-dark-border rounded overflow-hidden">
                   <button
                     onClick={() => toggleSection('workloadAdvanced')}
@@ -898,18 +573,17 @@ export function SimulationControls() {
                             }}
                             min={0.01}
                             max={2.0}
-                            
                             disabled={!isConnected || isRunning}
                             className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <label className="text-xs text-gray-400 flex items-center gap-1">
-                            ON Mean Duration (s)
+                            ON Period (sec)
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Mean duration parameter for burst periods (ON state). Burst durations follow an Erlang distribution with this mean, so actual durations vary around this value. Higher values = longer bursts on average.
+                                Average duration of burst periods (ON state). Traffic rate is multiplied by burstiness during these periods.
                               </div>
                             </div>
                           </label>
@@ -920,24 +594,23 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  onMeanSeconds: val,
+                                  onMeanSeconds: Math.max(0.1, Math.min(600.0, val)),
                                 }
                               });
                             }}
                             min={0.1}
-                            max={100.0}
-                            
+                            max={600.0}
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <label className="text-xs text-gray-400 flex items-center gap-1">
-                            OFF Mean Duration (s)
+                            OFF Period (sec)
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Mean duration parameter for quiet periods (OFF state). Quiet periods follow an Exponential distribution with this mean, so actual durations vary. Higher values = longer quiet periods on average.
+                                Average duration of quiet periods (OFF state). Traffic rate returns to base level.
                               </div>
                             </div>
                           </label>
@@ -948,15 +621,14 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  offMeanSeconds: val,
+                                  offMeanSeconds: Math.max(0.1, Math.min(600.0, val)),
                                 }
                               });
                             }}
                             min={0.1}
-                            max={100.0}
-                            
+                            max={600.0}
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -965,7 +637,7 @@ export function SimulationControls() {
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Controls how predictable burst durations are. Lower values (1-2) = more variable burst lengths. Higher values (5-10) = more consistent, predictable burst durations.
+                                Controls regularity of ON/OFF periods. K=1 = exponential (highly variable). K=2+ = more regular, predictable intervals.
                               </div>
                             </div>
                           </label>
@@ -976,15 +648,14 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  erlangK: val,
+                                  erlangK: Math.max(1, Math.min(10, Math.round(val))),
                                 }
                               });
                             }}
                             min={1}
                             max={10}
-                            
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -993,7 +664,7 @@ export function SimulationControls() {
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Poisson arrival rate for traffic spikes (events per second). Spikes arrive randomly following a Poisson process. For example, 0.1 means an average of 0.1 spikes per second (one spike every 10 seconds on average). Set to 0 to disable spikes.
+                                Average frequency of sudden traffic spikes (0 = no spikes). E.g., 0.1 = spike every 10 seconds on average.
                               </div>
                             </div>
                           </label>
@@ -1004,24 +675,23 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  spikeRatePerSec: val,
+                                  spikeRatePerSec: Math.max(0, Math.min(10.0, val)),
                                 }
                               });
                             }}
                             min={0}
                             max={10.0}
-                            
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <label className="text-xs text-gray-400 flex items-center gap-1">
-                            Spike Mean Duration (s)
+                            Spike Duration (sec)
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Mean duration parameter for spike events. Spike durations follow an Exponential distribution with this mean, so actual spike durations vary around this value. Higher values = longer spikes on average.
+                                Average duration of spikes. Spikes are short bursts of elevated traffic on top of base ON/OFF pattern.
                               </div>
                             </div>
                           </label>
@@ -1032,15 +702,14 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  spikeMeanDur: val,
+                                  spikeMeanDur: Math.max(0.1, Math.min(60.0, val)),
                                 }
                               });
                             }}
                             min={0.1}
-                            max={100.0}
-                            
+                            max={60.0}
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -1049,7 +718,7 @@ export function SimulationControls() {
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Mean parameter (in log space) for spike amplitudes. Spike amplitudes follow a Lognormal distribution with this mean, so actual spike sizes vary. Higher values (2.0-10.0) = larger spikes on average. Lower values (0.1-1.0) = smaller spikes on average. Typical range: 1.0-3.0.
+                                Mean multiplier for spike magnitude. 1.0 = spikes double the current traffic, 2.0 = spikes triple it.
                               </div>
                             </div>
                           </label>
@@ -1060,15 +729,14 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  spikeAmplitudeMean: val,
+                                  spikeAmplitudeMean: Math.max(0.1, Math.min(10.0, val)),
                                 }
                               });
                             }}
                             min={0.1}
                             max={10.0}
-                            
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -1077,7 +745,7 @@ export function SimulationControls() {
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Variance parameter (in log space) for spike amplitude distribution. Controls how much spike sizes vary. Lower values (0.01-0.5) = more consistent spike sizes. Higher values (0.5-2.0) = more variable spike sizes (mix of small and large spikes).
+                                Variability of spike amplitudes. 0.1 = consistent spike heights, 0.5+ = highly variable spikes.
                               </div>
                             </div>
                           </label>
@@ -1088,24 +756,23 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  spikeAmplitudeSigma: val,
+                                  spikeAmplitudeSigma: Math.max(0.01, Math.min(2.0, val)),
                                 }
                               });
                             }}
                             min={0.01}
                             max={2.0}
-                            
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <label className="text-xs text-gray-400 flex items-center gap-1">
-                            Capacity Limit (MB/s)
+                            Capacity Limit (MB)
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Maximum throughput capacity in MB/s. When traffic exceeds this limit, excess is either dropped or queued based on Queue Mode. Set to 0 for unlimited capacity.
+                                Maximum buffer capacity for queued writes (0 = unlimited). When full, behavior depends on Queue Mode setting.
                               </div>
                             </div>
                           </label>
@@ -1116,15 +783,14 @@ export function SimulationControls() {
                                 trafficDistribution: {
                                   ...(trafficDist || { model: 'advanced' }),
                                   model: 'advanced',
-                                  capacityLimitMB: val,
+                                  capacityLimitMB: Math.max(0, Math.min(10000, val)),
                                 }
                               });
                             }}
                             min={0}
                             max={10000}
-                            
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-2">
@@ -1133,7 +799,7 @@ export function SimulationControls() {
                             <div className="group relative">
                               <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
                               <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                                Drop: Discard excess traffic when capacity is exceeded (simulates network throttling). Queue: Buffer excess traffic and process it later when capacity is available (simulates buffering).
+                                When capacity is full: Drop = discard excess writes, Queue = buffer them (may cause OOM).
                               </div>
                             </div>
                           </label>
@@ -1149,18 +815,197 @@ export function SimulationControls() {
                               });
                             }}
                             disabled={!isConnected || isRunning}
-                            className="w-28 px-2 py-1 bg-dark-bg border border-dark-border rounded text-xs text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-xs text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           >
                             <option value="drop">Drop</option>
                             <option value="queue">Queue</option>
                           </select>
                         </div>
+
+                        {/* Overlap Distribution (collapsible within Advanced Traffic) */}
+                        <div className="col-span-2 mt-4 pt-3 border-t border-dark-border">
+                          <div className="flex items-center gap-2 mb-2">
+                            <h5 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
+                              Overlap Distribution
+                              <div className="group relative">
+                                <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                                <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
+                                  Controls how many overlapping files are selected from the target level during compaction. This affects write amplification and compaction size. The overlap pattern depends on your workload: uniform writes create many overlaps, skewed workloads create fewer. Uniform: equal probability for any overlap count. Geometric: favors fewer overlaps (good for balanced workloads). Exponential: strongly favors fewer overlaps (good for skewed workloads).
+                                </div>
+                              </div>
+                            </h5>
+                            <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
+                          </div>
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <select
+                              value={overlapDistType}
+                              onChange={(e) => {
+                                try {
+                                  if (!isConnected || isRunning) return;
+                                  const newType = e.target.value as "uniform" | "exponential" | "geometric" | "fixed";
+                                  console.log('[OverlapDist] Changing type to:', newType, 'current overlapDist:', overlapDist);
+
+                                  // Ensure we have a valid overlapDist object with all required fields
+                                  const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5, fixedPercentage: 0.5 };
+
+                                  // Create new overlap distribution config
+                                  const newOverlapDist: { type: "uniform" | "exponential" | "geometric" | "fixed"; geometricP?: number; exponentialLambda?: number; fixedPercentage?: number } = {
+                                    type: newType,
+                                    // Preserve existing parameters (they're optional, so only include if they exist)
+                                    ...(currentOverlapDist.geometricP !== undefined && { geometricP: currentOverlapDist.geometricP }),
+                                    ...(currentOverlapDist.exponentialLambda !== undefined && { exponentialLambda: currentOverlapDist.exponentialLambda }),
+                                    ...(currentOverlapDist.fixedPercentage !== undefined && { fixedPercentage: currentOverlapDist.fixedPercentage }),
+                                  };
+
+                                  // Ensure defaults are set for the selected type
+                                  if (newType === 'geometric' && newOverlapDist.geometricP === undefined) {
+                                    newOverlapDist.geometricP = 0.3;
+                                  }
+                                  if (newType === 'exponential' && newOverlapDist.exponentialLambda === undefined) {
+                                    newOverlapDist.exponentialLambda = 0.5;
+                                  }
+                                  if (newType === 'fixed' && newOverlapDist.fixedPercentage === undefined) {
+                                    newOverlapDist.fixedPercentage = 0.5;
+                                  }
+
+                                  console.log('[OverlapDist] New config:', newOverlapDist);
+
+                                  updateConfig({
+                                    overlapDistribution: newOverlapDist
+                                  });
+                                } catch (error) {
+                                  console.error('[OverlapDist] Error changing distribution type:', error);
+                                  alert(`Error changing overlap distribution: ${error instanceof Error ? error.message : String(error)}`);
+                                }
+                              }}
+                              disabled={!isConnected || isRunning}
+                              className="px-3 py-1.5 bg-dark-bg border border-dark-border rounded text-xs text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            >
+                              <option value="uniform">Uniform</option>
+                              <option value="exponential">Exponential</option>
+                              <option value="geometric">Geometric</option>
+                              <option value="fixed">Fixed</option>
+                            </select>
+                            {overlapDistType === 'geometric' && (
+                              <>
+                                <label className="text-xs text-gray-400 flex items-center gap-1">
+                                  Bias:
+                                  <div className="group relative">
+                                    <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                                    <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                      Geometric distribution success probability (P). Controls bias toward fewer overlaps. Higher values (0.5-0.9) = stronger bias toward 1 overlap. Lower values (0.1-0.3) = more balanced distribution. Default: 0.3 means 30% chance of 1 overlap, 21% chance of 2 overlaps, 14.7% chance of 3 overlaps, etc. (probability decreases geometrically as overlap count increases). Note: 0 overlaps (trivial moves) are handled separately and not part of this distribution.
+                                    </div>
+                                  </div>
+                                </label>
+                                <NumberInput
+                                  value={geometricP}
+                                  onChange={(val) => {
+                                    try {
+                                      const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                                      const clampedVal = Math.max(0.1, Math.min(0.9, val));
+                                      console.log('[OverlapDist] Updating geometricP to:', clampedVal);
+                                      updateConfig({
+                                        overlapDistribution: {
+                                          ...currentOverlapDist,
+                                          type: 'geometric',
+                                          geometricP: clampedVal,
+                                        }
+                                      });
+                                    } catch (error) {
+                                      console.error('[OverlapDist] Error updating geometricP:', error);
+                                      alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
+                                    }
+                                  }}
+                                  min={0.1}
+                                  max={0.9}
+                                  disabled={!isConnected || isRunning}
+                                  className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                />
+                              </>
+                            )}
+                            {overlapDistType === 'exponential' && (
+                              <>
+                                <label className="text-xs text-gray-400 flex items-center gap-1">
+                                  Bias:
+                                  <div className="group relative">
+                                    <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                                    <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                      Exponential distribution rate parameter (Lambda). Controls bias toward fewer overlaps. Higher values (1.0-2.0) = stronger bias toward 1 overlap. Lower values (0.1-0.5) = more balanced distribution. Default: 0.5.
+                                    </div>
+                                  </div>
+                                </label>
+                                <NumberInput
+                                  value={exponentialLambda}
+                                  onChange={(val) => {
+                                    try {
+                                      const currentOverlapDist = overlapDist || { type: 'geometric', geometricP: 0.3, exponentialLambda: 0.5 };
+                                      const clampedVal = Math.max(0.1, Math.min(2.0, val));
+                                      console.log('[OverlapDist] Updating exponentialLambda to:', clampedVal);
+                                      updateConfig({
+                                        overlapDistribution: {
+                                          ...currentOverlapDist,
+                                          type: 'exponential',
+                                          exponentialLambda: clampedVal,
+                                        }
+                                      });
+                                    } catch (error) {
+                                      console.error('[OverlapDist] Error updating exponentialLambda:', error);
+                                      alert(`Error updating bias: ${error instanceof Error ? error.message : String(error)}`);
+                                    }
+                                  }}
+                                  min={0.1}
+                                  max={2.0}
+                                  disabled={!isConnected || isRunning}
+                                  className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                />
+                              </>
+                            )}
+                            {overlapDistType === 'fixed' && (
+                              <>
+                                <label className="text-xs text-gray-400 flex items-center gap-1">
+                                  Percentage:
+                                  <div className="group relative">
+                                    <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                                    <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                      Fixed percentage of files from the target level that overlap. 0.0 = no overlaps (trivial moves only), 1.0 = all files overlap, 0.5 = 50% of files overlap. This provides deterministic overlap selection instead of probabilistic distributions.
+                                    </div>
+                                  </div>
+                                </label>
+                                <NumberInput
+                                  value={fixedPercentage}
+                                  onChange={(val) => {
+                                    try {
+                                      const currentOverlapDist = overlapDist || { type: 'fixed', fixedPercentage: 0.5 };
+                                      const clampedVal = Math.max(0.0, Math.min(1.0, val));
+                                      console.log('[OverlapDist] Updating fixedPercentage to:', clampedVal);
+                                      updateConfig({
+                                        overlapDistribution: {
+                                          ...currentOverlapDist,
+                                          type: 'fixed',
+                                          fixedPercentage: clampedVal,
+                                        }
+                                      });
+                                    } catch (error) {
+                                      console.error('[OverlapDist] Error updating fixedPercentage:', error);
+                                      alert(`Error updating percentage: ${error instanceof Error ? error.message : String(error)}`);
+                                    }
+                                  }}
+                                  min={0.0}
+                                  max={1.0}
+                                  disabled={!isConnected || isRunning}
+                                  className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                                />
+                              </>
+                            )}
+                          </div>
+                        </div>
+
                       </div>
                     </div>
                   )}
                 </div>
               )}
-              
+
               {sustainableRangeStr && (
                 <details className="mt-2 text-xs text-gray-400">
                   <summary className="cursor-pointer hover:text-gray-300 font-medium">Worst-case scenario explanation</summary>
@@ -1215,6 +1060,535 @@ export function SimulationControls() {
                 <div className="mt-2 text-xs text-red-400 flex items-center gap-1">
                   <AlertTriangle className="w-3 h-3" />
                   <span>Write rate exceeds sustainable limit ({sustainableRangeStr || maxSustainableRate?.toFixed(1)} MB/s)</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Compression Configuration */}
+        <div className="border border-dark-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => toggleSection('compression')}
+            tabIndex={-1}
+            className="w-full flex items-center justify-between p-3 bg-dark-bg hover:bg-gray-800 transition-colors"
+          >
+            <h3 className="font-semibold text-sm">Compression</h3>
+            {expandedSections.compression ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+          {expandedSections.compression && (
+            <div className="p-3 bg-dark-card">
+              <div className="text-xs text-gray-400 mb-3">
+                Compression affects both read and write paths: reduces physical storage size and I/O, but adds CPU overhead. Compression/decompression time is modeled additively with disk I/O (compress → write → seek). Slower speeds increase operation duration. Choose a preset algorithm or customize for your workload.
+              </div>
+              <div className="flex items-center gap-3 mb-3">
+                <label className="text-sm text-gray-300">Compression Presets</label>
+                <select
+                  value={getCompressionPreset()}
+                  onChange={(e) => {
+                    if (!isConnected || isRunning) return;
+                    const preset = e.target.value;
+                    if (preset === 'lz4') {
+                      updateConfig({
+                        compressionFactor: 0.85,
+                        compressionThroughputMBps: 750,
+                        decompressionThroughputMBps: 3700,
+                        blockSizeKB: 4,
+                      });
+                    } else if (preset === 'snappy') {
+                      updateConfig({
+                        compressionFactor: 0.83,
+                        compressionThroughputMBps: 530,
+                        decompressionThroughputMBps: 1800,
+                        blockSizeKB: 4,
+                      });
+                    } else if (preset === 'zstd') {
+                      updateConfig({
+                        compressionFactor: 0.70,
+                        compressionThroughputMBps: 470,
+                        decompressionThroughputMBps: 1380,
+                        blockSizeKB: 4,
+                      });
+                    } else if (preset === 'none') {
+                      updateConfig({
+                        compressionFactor: 1.0,
+                        compressionThroughputMBps: 0,
+                        decompressionThroughputMBps: 0,
+                        blockSizeKB: 4,
+                      });
+                    }
+                  }}
+                  disabled={!isConnected || isRunning}
+                  className="px-3 py-1 bg-dark-bg border border-dark-border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="lz4">LZ4 (Fast, 15% compression)</option>
+                  <option value="snappy">Snappy (Balanced, 17% compression)</option>
+                  <option value="zstd">Zstd (Best compression, 30%)</option>
+                  <option value="none">None (No compression)</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <ConfigInput
+                  label="Compression Factor"
+                  field="compressionFactor"
+                  min={0.1}
+                  max={1.0}
+                  tooltip="Physical size after compression (0.85 = 15% reduction with LZ4, 0.70 = 30% with Zstd, 1.0 = no compression)" />
+                <ConfigInput
+                  label="Block Size"
+                  field="blockSizeKB"
+                  min={1}
+                  max={64}
+                  unit="KB"
+                  tooltip="SST block size (RocksDB default: 4 KB). Larger blocks improve compression ratio but increase bytes read/decompressed per key lookup. Smaller blocks reduce per-read overhead but compress less efficiently." />
+                <ConfigInput
+                  label="Compression Speed"
+                  field="compressionThroughputMBps"
+                  min={0}
+                  max={5000}
+                  unit="MB/s"
+                  tooltip="CPU throughput for compression (0 = infinite/no CPU cost). LZ4: 750 MB/s, Snappy: 530 MB/s, Zstd: 470 MB/s (single-threaded)" />
+                <ConfigInput
+                  label="Decompression Speed"
+                  field="decompressionThroughputMBps"
+                  min={0}
+                  max={10000}
+                  unit="MB/s"
+                  tooltip="CPU throughput for decompression (0 = infinite/no CPU cost). LZ4: 3700 MB/s, Snappy: 1800 MB/s, Zstd: 1380 MB/s (single-threaded)" />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Read Traffic Model */}
+        <div className="border border-dark-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => toggleSection('readWorkload')}
+            tabIndex={-1}
+            className="w-full flex items-center justify-between p-3 bg-dark-bg hover:bg-gray-800 transition-colors"
+          >
+            <h3 className="font-semibold text-sm">Read Traffic Model</h3>
+            {expandedSections.readWorkload ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+          {expandedSections.readWorkload && (
+            <div className="p-3 bg-dark-card">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-sm text-gray-300 flex items-center gap-1 flex-1 min-w-0">
+                    Requests/sec
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                        Total read requests per second (0 = disabled). The simulator calculates latency percentiles and disk bandwidth based on this rate, cache hit rate, and LSM structure.
+                      </div>
+                    </div>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000000}
+                    step={100}
+                    value={readWorkload?.requestsPerSec || 0}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val)) {
+                        const reqsPerSec = Math.max(0, val);
+                        if (reqsPerSec === 0) {
+                          updateConfig({ readWorkload: undefined });
+                        } else {
+                          updateConfig({
+                            readWorkload: {
+                              enabled: true,
+                              requestsPerSec: reqsPerSec,
+                              requestRateVariability: readWorkload?.requestRateVariability ?? 0.0,
+                              cacheHitRate: readWorkload?.cacheHitRate || 0.90,
+                              bloomNegativeRate: readWorkload?.bloomNegativeRate || 0.02,
+                              scanRate: readWorkload?.scanRate || 0.05,
+                              cacheHitLatency: readWorkload?.cacheHitLatency || { distribution: 'fixed', mean: 0.001 },
+                              bloomNegativeLatency: readWorkload?.bloomNegativeLatency || { distribution: 'fixed', mean: 0.01 },
+                              pointLookupLatency: readWorkload?.pointLookupLatency || { distribution: 'exponential', mean: 2.0 },
+                              scanLatency: readWorkload?.scanLatency || { distribution: 'lognormal', mean: 10.0 },
+                              avgScanSizeKB: readWorkload?.avgScanSizeKB || 16.0,
+                            }
+                          });
+                        }
+                      }
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              {/* Request Rate Variability - only show when requestsPerSec > 0 */}
+              {(readWorkload?.requestsPerSec || 0) > 0 && (
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs text-gray-400 flex items-center gap-1">
+                    Request Rate Variability
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                        Controls random fluctuation in request rate. 0 = constant rate, 0.2 = ±20% variation (typical), 0.5 = ±50% variation (high volatility). Uses coefficient of variation model - simpler than write traffic burstiness.
+                      </div>
+                    </div>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={0.5}
+                    step={0.01}
+                    value={readWorkload?.requestRateVariability ?? 0}
+                    onChange={(e) => {
+                      if (!isConnected || isRunning) return;
+                      const variability = parseFloat(e.target.value);
+                      if (isNaN(variability) || variability < 0 || variability > 0.5) return;
+                      updateConfig({
+                        readWorkload: {
+                          enabled: true,
+                          requestsPerSec: readWorkload?.requestsPerSec || 1000,
+                          requestRateVariability: variability,
+                          cacheHitRate: readWorkload?.cacheHitRate || 0.90,
+                          bloomNegativeRate: readWorkload?.bloomNegativeRate || 0.02,
+                          scanRate: readWorkload?.scanRate || 0.05,
+                          cacheHitLatency: readWorkload?.cacheHitLatency || { distribution: 'fixed', mean: 0.001 },
+                          bloomNegativeLatency: readWorkload?.bloomNegativeLatency || { distribution: 'fixed', mean: 0.01 },
+                          pointLookupLatency: readWorkload?.pointLookupLatency || { distribution: 'exponential', mean: 2.0 },
+                          scanLatency: readWorkload?.scanLatency || { distribution: 'lognormal', mean: 10.0 },
+                          avgScanSizeKB: readWorkload?.avgScanSizeKB || 16.0,
+                        }
+                      });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              )}
+
+              {/* Read Traffic Presets */}
+              {(readWorkload?.requestsPerSec || 0) > 0 && (
+                <div className="flex items-center gap-3 mb-2">
+                  <label className="text-sm text-gray-300">Read Traffic Presets</label>
+                  <select
+                    value="custom"
+                    onChange={(e) => {
+                      if (!isConnected || isRunning) return;
+                      const preset = e.target.value;
+                      const reqsPerSec = readWorkload?.requestsPerSec || 1000;
+
+                      if (preset === 'light') {
+                        updateConfig({
+                          readWorkload: {
+                            enabled: true,
+                            requestsPerSec: reqsPerSec,
+                            requestRateVariability: 0.0,
+                            cacheHitRate: 0.95,
+                            bloomNegativeRate: 0.01,
+                            scanRate: 0.02,
+                            cacheHitLatency: { distribution: 'fixed', mean: 0.001 },
+                            bloomNegativeLatency: { distribution: 'fixed', mean: 0.01 },
+                            pointLookupLatency: { distribution: 'exponential', mean: 1.5 },
+                            scanLatency: { distribution: 'lognormal', mean: 8.0 },
+                            avgScanSizeKB: 8.0,
+                          }
+                        });
+                      } else if (preset === 'moderate') {
+                        updateConfig({
+                          readWorkload: {
+                            enabled: true,
+                            requestsPerSec: reqsPerSec,
+                            requestRateVariability: 0.0,
+                            cacheHitRate: 0.90,
+                            bloomNegativeRate: 0.02,
+                            scanRate: 0.05,
+                            cacheHitLatency: { distribution: 'fixed', mean: 0.001 },
+                            bloomNegativeLatency: { distribution: 'fixed', mean: 0.01 },
+                            pointLookupLatency: { distribution: 'exponential', mean: 2.0 },
+                            scanLatency: { distribution: 'lognormal', mean: 10.0 },
+                            avgScanSizeKB: 16.0,
+                          }
+                        });
+                      } else if (preset === 'heavy') {
+                        updateConfig({
+                          readWorkload: {
+                            enabled: true,
+                            requestsPerSec: reqsPerSec,
+                            requestRateVariability: 0.0,
+                            cacheHitRate: 0.80,
+                            bloomNegativeRate: 0.03,
+                            scanRate: 0.10,
+                            cacheHitLatency: { distribution: 'fixed', mean: 0.001 },
+                            bloomNegativeLatency: { distribution: 'fixed', mean: 0.01 },
+                            pointLookupLatency: { distribution: 'exponential', mean: 3.0 },
+                            scanLatency: { distribution: 'lognormal', mean: 15.0 },
+                            avgScanSizeKB: 32.0,
+                          }
+                        });
+                      }
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className="px-3 py-1 bg-dark-bg border border-dark-border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="light">Light (95% cache, fast)</option>
+                    <option value="moderate">Moderate (90% cache, balanced)</option>
+                    <option value="heavy">Heavy (80% cache, more scans)</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Advanced Read Parameters (collapsible) - only show when requestsPerSec > 0 */}
+              {(readWorkload?.requestsPerSec || 0) > 0 && (
+                <div className="mt-3 border border-dark-border rounded overflow-hidden">
+                  <button
+                    onClick={() => toggleSection('readWorkloadAdvanced')}
+                    tabIndex={-1}
+                    className="w-full flex items-center justify-between p-2 bg-dark-bg hover:bg-gray-700 transition-colors"
+                  >
+                    <span className="text-xs font-medium flex items-center gap-1">
+                      {expandedSections.readWorkloadAdvanced ? '▼' : '▶'} Advanced Read Parameters
+                    </span>
+                  </button>
+                  {expandedSections.readWorkloadAdvanced && (
+                    <div className="p-2 bg-dark-card">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        {/* Cache Hit Rate */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Cache Hit Rate
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Percentage of reads served from block cache (0.0-1.0). Default: 0.90 (90%)
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.cacheHitRate || 0.90}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({ cacheHitRate: Math.max(0, Math.min(1.0, val)) })
+                              });
+                            }}
+                            min={0}
+                            max={1.0}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Bloom Negative Rate */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Bloom Negative Rate
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Percentage of reads that are bloom filter negatives (0.0-1.0). Default: 0.02 (2%)
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.bloomNegativeRate || 0.02}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({ bloomNegativeRate: Math.max(0, Math.min(1.0, val)) })
+                              });
+                            }}
+                            min={0}
+                            max={1.0}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Scan Rate */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Scan Rate
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Percentage of reads that are range scans (0.0-1.0). Remaining % = point lookups. Default: 0.05 (5%)
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.scanRate || 0.05}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({ scanRate: Math.max(0, Math.min(1.0, val)) })
+                              });
+                            }}
+                            min={0}
+                            max={1.0}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Point Lookup Rate (calculated, read-only) */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Point Lookup Rate
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Calculated as: 1.0 - CacheHitRate - BloomNegativeRate - ScanRate. These are point lookups that miss cache and must read from disk.
+                              </div>
+                            </div>
+                          </label>
+                          <div className="w-20 px-2 py-1 bg-gray-800 border border-dark-border rounded text-right text-xs text-gray-400">
+                            {(() => {
+                              const cacheHitRate = readWorkload?.cacheHitRate || 0.90;
+                              const bloomNegativeRate = readWorkload?.bloomNegativeRate || 0.02;
+                              const scanRate = readWorkload?.scanRate || 0.05;
+                              const pointLookupRate = Math.max(0, 1.0 - cacheHitRate - bloomNegativeRate - scanRate);
+                              return pointLookupRate.toFixed(2);
+                            })()}
+                          </div>
+                        </div>
+
+                        {/* Avg Scan Size */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Avg Scan Size (KB)
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Average size of range scans in KB. Default: 16 KB
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.avgScanSizeKB || 16.0}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({ avgScanSizeKB: Math.max(1, val) })
+                              });
+                            }}
+                            min={1}
+                            max={10000}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        <div className="col-span-2 mt-2 pt-2 border-t border-dark-border">
+                          <h5 className="text-xs font-semibold text-gray-400 uppercase mb-2">Latency Configuration</h5>
+                        </div>
+
+                        {/* Cache Hit Latency */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Cache Hit Latency (ms)
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Mean latency for cache hits (fixed distribution). Default: 0.001 ms (1 μs)
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.cacheHitLatency?.mean || 0.001}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({
+                                  cacheHitLatency: { distribution: 'fixed', mean: Math.max(0.0001, val) }
+                                })
+                              });
+                            }}
+                            min={0.0001}
+                            max={100}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Bloom Negative Latency */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Bloom Negative Latency (ms)
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Mean latency for bloom filter negatives (fixed distribution). Default: 0.01 ms (10 μs)
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.bloomNegativeLatency?.mean || 0.01}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({
+                                  bloomNegativeLatency: { distribution: 'fixed', mean: Math.max(0.0001, val) }
+                                })
+                              });
+                            }}
+                            min={0.0001}
+                            max={100}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Point Lookup Latency */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Point Lookup Latency (ms)
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Mean latency for point lookups with cache miss (exponential distribution, scaled by read amplification). Default: 2.0 ms
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.pointLookupLatency?.mean || 2.0}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({
+                                  pointLookupLatency: { distribution: 'exponential', mean: Math.max(0.1, val) }
+                                })
+                              });
+                            }}
+                            min={0.1}
+                            max={1000}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        {/* Scan Latency */}
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs text-gray-400 flex items-center gap-1">
+                            Scan Latency (ms)
+                            <div className="group relative">
+                              <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                Mean latency for range scans (lognormal distribution). Default: 10.0 ms
+                              </div>
+                            </div>
+                          </label>
+                          <NumberInput
+                            value={readWorkload?.scanLatency?.mean || 10.0}
+                            onChange={(val) => {
+                              updateConfig({
+                                readWorkload: getCompleteReadWorkload({
+                                  scanLatency: { distribution: 'lognormal', mean: Math.max(0.1, val) }
+                                })
+                              });
+                            }}
+                            min={0.1}
+                            max={10000}
+                            disabled={!isConnected || isRunning}
+                            className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

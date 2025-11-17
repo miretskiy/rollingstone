@@ -25,6 +25,37 @@ export interface OverlapDistributionConfig {
     fixedPercentage?: number; // For fixed: percentage of level below that overlaps (0.0 to 1.0)
 }
 
+// Read path modeling types
+export type LatencyDistributionType = "fixed" | "exponential" | "lognormal";
+
+export interface LatencySpec {
+    distribution: LatencyDistributionType;
+    mean: number; // Mean latency in milliseconds
+}
+
+export interface ReadWorkloadConfig {
+    enabled: boolean;
+    requestsPerSec: number; // Total read requests per second
+
+    // Traffic variability (simpler than write traffic model)
+    requestRateVariability?: number; // Coefficient of variation for request rate (0 = constant, 0.2 = 20% std dev)
+
+    // Request type distribution (percentages, should sum to ~1.0)
+    cacheHitRate: number;      // Percentage hitting block cache (e.g., 0.90)
+    bloomNegativeRate: number; // Percentage that are bloom filter negatives (e.g., 0.02)
+    scanRate: number;          // Percentage that are range scans (e.g., 0.05)
+    // Remaining % = point lookups with cache miss
+
+    // Latency specifications per request type
+    cacheHitLatency: LatencySpec;      // Latency for cache hits
+    bloomNegativeLatency: LatencySpec; // Latency for bloom filter negatives
+    pointLookupLatency: LatencySpec;   // Base latency for point lookups (scaled by read amp)
+    scanLatency: LatencySpec;          // Latency for range scans
+
+    // Request characteristics
+    avgScanSizeKB: number; // Average scan size in KB
+}
+
 // Message types for WebSocket communication
 export interface SimulationConfig {
     writeRateMBps: number;
@@ -59,6 +90,7 @@ export interface SimulationConfig {
     walSyncLatencyMs?: number; // fsync() latency in milliseconds (default 1.5ms)
     trafficDistribution?: TrafficDistributionConfig;
     overlapDistribution?: OverlapDistributionConfig;
+    readWorkload?: ReadWorkloadConfig; // Read path modeling configuration (undefined = disabled)
 }
 
 export interface CompactionStats {
@@ -88,6 +120,7 @@ export interface SimulationMetrics {
     lastCompactionDurationSec?: number; // Duration of most recent compaction in seconds
     lastCompactionThroughputMBps?: number; // Throughput of most recent compaction (input MB / duration)
     compactionsSinceUpdate?: Record<number, CompactionStats>; // Per-level aggregate compaction activity
+    totalCompactionsCompleted?: number; // Monotonic counter of total compactions completed (for rate calculation)
     diskUtilizationPercent?: number; // Percentage of disk bandwidth used (0-100%)
     inProgressCount?: number;
     inProgressDetails?: Array<{
@@ -101,6 +134,16 @@ export interface SimulationMetrics {
     stallDurationSeconds?: number;
     isStalled?: boolean;
     isOOMKilled?: boolean;
+    avgReadLatencyMs?: number;  // Average read latency across all request types
+    p50ReadLatencyMs?: number;  // P50 (median) read latency
+    p99ReadLatencyMs?: number;  // P99 read latency
+    readBandwidthMBps?: number; // Disk bandwidth consumed by reads
+    currentReadReqsPerSec?: number; // Current actual read requests/sec (with variability applied)
+    // Read request type breakdown (requests per second)
+    cacheHitsPerSec?: number;      // Cache hits per second
+    bloomNegativesPerSec?: number; // Bloom filter negatives per second
+    scansPerSec?: number;          // Range scans per second
+    pointLookupsPerSec?: number;   // Point lookups (cache miss) per second
 }
 
 export interface SSTFile {
@@ -130,7 +173,7 @@ export interface SimulationState {
     memtableCurrentSizeMB: number;
     levels: LevelState[];
     totalSizeMB: number;
-    activeCompactions?: number[]; // Levels currently being compacted
+    activeCompactions?: number; // Count of currently scheduled/pending compactions
     activeCompactionInfos?: ActiveCompactionInfo[]; // Detailed compaction info
     numImmutableMemtables?: number; // Number of immutable memtables waiting to flush
     immutableMemtableSizesMB?: number[]; // Sizes of immutable memtables waiting to flush

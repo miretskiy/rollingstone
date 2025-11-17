@@ -256,3 +256,49 @@ func newDistributionAdapterWithSeed(distType DistributionType, seed int64) fileP
 		rng:  rng,
 	}
 }
+
+// ================================
+// Latency Distribution Sampling
+// ================================
+// These functions sample latencies for read path modeling
+
+// SampleLatency samples a latency value based on the specified distribution
+// Returns latency in milliseconds
+func SampleLatency(spec LatencySpec, rng *rand.Rand) float64 {
+	switch spec.Distribution {
+	case LatencyDistFixed:
+		return spec.Mean
+	case LatencyDistExp:
+		// Exponential distribution: X ~ Exp(lambda)
+		// Mean = 1/lambda, so lambda = 1/mean
+		// Using inverse transform sampling: X = -ln(U) / lambda
+		u := rng.Float64()
+		if u == 0 {
+			u = 1e-10 // Avoid log(0)
+		}
+		lambda := 1.0 / spec.Mean
+		return -math.Log(u) / lambda
+	case LatencyDistLognormal:
+		// Lognormal distribution: ln(X) ~ N(mu, sigma^2)
+		// For simplicity, use sigma = 0.5 (moderate variance)
+		// Mean of lognormal: exp(mu + sigma^2/2)
+		// To get desired mean M, solve: M = exp(mu + sigma^2/2)
+		// => mu = ln(M) - sigma^2/2
+		sigma := 0.5
+		mu := math.Log(spec.Mean) - (sigma * sigma / 2.0)
+
+		// Generate standard normal using Box-Muller transform
+		u1 := rng.Float64()
+		u2 := rng.Float64()
+		if u1 == 0 {
+			u1 = 1e-10
+		}
+		z := math.Sqrt(-2.0*math.Log(u1)) * math.Cos(2.0*math.Pi*u2)
+
+		// Transform to lognormal
+		x := math.Exp(mu + sigma*z)
+		return x
+	default:
+		return spec.Mean
+	}
+}

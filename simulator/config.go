@@ -96,6 +96,46 @@ type OverlapDistributionConfig struct {
 	FixedPercentage   *float64         `json:"fixedPercentage,omitempty"` // For Fixed: percentage of level below that overlaps (0.0 to 1.0, default 0.5). Use pointer to distinguish "not set" from "explicitly set to 0.0"
 }
 
+// LatencyDistributionType represents the type of latency distribution
+type LatencyDistributionType string
+
+const (
+	LatencyDistFixed     LatencyDistributionType = "fixed"     // Fixed latency (deterministic)
+	LatencyDistExp       LatencyDistributionType = "exponential" // Exponential distribution
+	LatencyDistLognormal LatencyDistributionType = "lognormal" // Lognormal distribution
+)
+
+// LatencySpec specifies a latency distribution for read operations
+type LatencySpec struct {
+	Distribution LatencyDistributionType `json:"distribution"` // Distribution type: "fixed", "exponential", "lognormal"
+	Mean         float64                 `json:"mean"`         // Mean latency in milliseconds
+}
+
+// ReadWorkloadConfig holds read path modeling parameters
+// This uses a statistical approach: no discrete read events, just calculated metrics
+type ReadWorkloadConfig struct {
+	Enabled        bool    `json:"enabled"`        // Enable read path modeling
+	RequestsPerSec float64 `json:"requestsPerSec"` // Base read requests per second (will fluctuate if RequestRateVariability > 0)
+
+	// Traffic variability (simpler than write traffic model)
+	RequestRateVariability float64 `json:"requestRateVariability"` // Coefficient of variation for request rate (0 = constant, 0.2 = 20% std dev, typical range 0-0.5)
+
+	// Request type distribution (percentages, should sum to ~1.0)
+	// Remaining percentage after these three = point lookups with cache miss
+	CacheHitRate      float64 `json:"cacheHitRate"`      // Percentage hitting block cache (default: 0.90)
+	BloomNegativeRate float64 `json:"bloomNegativeRate"` // Percentage that are bloom filter negatives (default: 0.02)
+	ScanRate          float64 `json:"scanRate"`          // Percentage that are range scans (default: 0.05)
+
+	// Latency specifications per request type
+	CacheHitLatency      LatencySpec `json:"cacheHitLatency"`      // Latency for cache hits (default: fixed, 0.001 ms)
+	BloomNegativeLatency LatencySpec `json:"bloomNegativeLatency"` // Latency for bloom filter negatives (default: fixed, 0.01 ms)
+	PointLookupLatency   LatencySpec `json:"pointLookupLatency"`   // Base latency for point lookups (scaled by read amp) (default: exponential, 2.0 ms)
+	ScanLatency          LatencySpec `json:"scanLatency"`          // Latency for range scans (default: lognormal, 10.0 ms)
+
+	// Request characteristics
+	AvgScanSizeKB float64 `json:"avgScanSizeKB"` // Average scan size in KB (default: 16 KB)
+}
+
 // String returns the string representation of CompactionStyle
 func (cs CompactionStyle) String() string {
 	switch cs {
@@ -196,6 +236,9 @@ type SimConfig struct {
 
 	// Overlap Distribution
 	OverlapDistribution OverlapDistributionConfig `json:"overlapDistribution"` // Overlap distribution configuration
+
+	// Read Path Modeling
+	ReadWorkload *ReadWorkloadConfig `json:"readWorkload,omitempty"` // Read workload configuration (nil = disabled)
 }
 
 // DefaultConfig returns sensible defaults based on RocksDB documentation
@@ -239,6 +282,40 @@ func DefaultConfig() SimConfig {
 			GeometricP:        0.3,
 			ExponentialLambda: 0.5,
 		},
+		ReadWorkload: nil, // Disabled by default (nil = read path modeling not enabled)
+	}
+}
+
+// DefaultReadWorkload returns default read workload configuration
+// Represents typical production workload with high cache hit rate
+func DefaultReadWorkload() ReadWorkloadConfig {
+	return ReadWorkloadConfig{
+		Enabled:                false, // Explicitly disabled by default
+		RequestsPerSec:         1000,  // 1000 reads/sec (moderate load)
+		RequestRateVariability: 0.0,   // No variability by default (constant rate)
+		CacheHitRate:           0.90,  // 90% cache hits (typical for production)
+		BloomNegativeRate:      0.02,  // 2% bloom filter negatives
+		ScanRate:               0.05,  // 5% range scans
+		// Remaining 3% = point lookups with cache miss
+
+		// Latency specifications
+		CacheHitLatency: LatencySpec{
+			Distribution: LatencyDistFixed,
+			Mean:         0.001, // 1 microsecond (memory access)
+		},
+		BloomNegativeLatency: LatencySpec{
+			Distribution: LatencyDistFixed,
+			Mean:         0.01, // 10 microseconds (bloom filter checks)
+		},
+		PointLookupLatency: LatencySpec{
+			Distribution: LatencyDistExp,
+			Mean:         2.0, // 2ms mean (will be scaled by read amplification)
+		},
+		ScanLatency: LatencySpec{
+			Distribution: LatencyDistLognormal,
+			Mean:         10.0, // 10ms mean for scans
+		},
+		AvgScanSizeKB: 16.0, // 16 KB average scan size
 	}
 }
 

@@ -38,6 +38,9 @@ export interface SimulationConfig {
     targetFileSizeMultiplier: number;
     deduplicationFactor: number;
     compressionFactor: number;
+    compressionThroughputMBps: number;
+    decompressionThroughputMBps: number;
+    blockSizeKB: number;
     maxBackgroundJobs: number;
     maxSubcompactions: number;
     maxCompactionBytesMB: number;

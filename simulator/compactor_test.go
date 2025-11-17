@@ -120,6 +120,10 @@ func TestLeveledCompactorNeedsCompaction(t *testing.T) {
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
 		DeduplicationFactor: 0.9,
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 	}
 
 	tests := []struct {
@@ -183,6 +187,10 @@ func TestLeveledCompactorPickCompaction(t *testing.T) {
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
 		DeduplicationFactor: 0.9,
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
 	}
@@ -264,6 +272,10 @@ func TestLeveledCompactorExecuteCompaction(t *testing.T) {
 		MaxBytesForLevelBaseMB:    256,
 		LevelMultiplier:           10,
 		DeduplicationFactor: 0.9,
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
 	}
@@ -556,6 +568,11 @@ func TestMaxCompactionBytesDefault(t *testing.T) {
 		MaxCompactionBytesMB: 0,  // Should default to 64 * 25 = 1600 MB
 		L0CompactionTrigger:  10, // High threshold to avoid intra-L0
 		LevelMultiplier:      10, // For intra-L0 size ratio check
+		DeduplicationFactor: 0.9,
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 	}
 	lsm := NewLSMTree(3, 64.0)
 	compactor := NewLeveledCompactor(0)
@@ -610,6 +627,11 @@ func TestIntraL0PreferredWhenBaseLevelSmall(t *testing.T) {
 		MaxCompactionBytesMB: 0,  // Use default (64 * 25 = 1600 MB)
 		L0CompactionTrigger:  4,  // Intra-L0 triggers at 4+2=6 files
 		LevelMultiplier:      10, // For size ratio calculation
+		DeduplicationFactor: 0.9,
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 	}
 	lsm := NewLSMTree(3, 64.0)
 	compactor := NewLeveledCompactor(0)
@@ -662,6 +684,10 @@ func TestTargetFileSizePerLevel(t *testing.T) {
 		TargetFileSizeMB:          64,
 		TargetFileSizeMultiplier:  2,
 		DeduplicationFactor: 1.0,   // No reduction (but compactor applies 0.9 for L0→L1, 0.99 for deeper)
+		CompressionFactor:         0.85,
+		CompressionThroughputMBps: 750,
+		DecompressionThroughputMBps: 3700,
+		BlockSizeKB:               4,
 		MaxCompactionBytesMB:      10000, // Large enough to not interfere
 		L0CompactionTrigger:       100,   // Prevent intra-L0
 	}

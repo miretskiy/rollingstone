@@ -156,7 +156,15 @@ type SimConfig struct {
 	TargetFileSizeMB         int     `json:"targetFileSizeMB"`         // target_file_size_base (default 64MB)
 	TargetFileSizeMultiplier int     `json:"targetFileSizeMultiplier"` // target_file_size_multiplier (default 1, but 2 makes sense for deeper levels)
 	DeduplicationFactor      float64 `json:"deduplicationFactor"`      // Logical size reduction from tombstones/overwrites (0.9 = 10% dedup, 1.0 = no dedup)
-	CompressionFactor        float64 `json:"compressionFactor"`        // Physical size reduction from compression (0.7 = 1.4x Snappy, 0.4 = 2.5x Zstd, 1.0 = no compression)
+	CompressionFactor        float64 `json:"compressionFactor"`        // Physical size reduction from compression (0.85 = ~18% with 4KB blocks, 0.7 = ~30% with larger blocks, 1.0 = no compression)
+
+	// Compression CPU Performance
+	// RocksDB uses compression algorithms like LZ4, Snappy, or Zstd which consume CPU cycles
+	// These parameters model the CPU cost of compression/decompression on the critical path
+	// Based on real benchmarks: LZ4 ~750 MB/s compress, 3700 MB/s decompress (single-threaded)
+	CompressionThroughputMBps   float64 `json:"compressionThroughputMBps"`   // CPU throughput for compression (MB/s), 0 = infinite (no CPU cost)
+	DecompressionThroughputMBps float64 `json:"decompressionThroughputMBps"` // CPU throughput for decompression (MB/s), 0 = infinite (no CPU cost)
+	BlockSizeKB                 int     `json:"blockSizeKB"`                 // SST block size in KB (RocksDB default: 4 KB) - affects compression efficiency and read amplification
 
 	// Compaction Parallelism & Performance
 	MaxBackgroundJobs                int             `json:"maxBackgroundJobs"`                // max_background_jobs (default 2) - parallel compactions
@@ -202,7 +210,10 @@ func DefaultConfig() SimConfig {
 		TargetFileSizeMB:                 64,                       // 64MB SST files (RocksDB default)
 		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level (L1=64MB, L2=128MB, L3=256MB, etc.)
 		DeduplicationFactor:              0.9,                      // 10% logical reduction (tombstones, overwrites)
-		CompressionFactor:                0.7,                      // 30% physical reduction (1.4x Snappy compression, RocksDB default)
+		CompressionFactor:                0.85,                     // 15% physical reduction with 4KB blocks (LZ4/Snappy), more realistic than 0.7
+		CompressionThroughputMBps:        750,                      // LZ4 compression speed (single-threaded, from benchmarks)
+		DecompressionThroughputMBps:      3700,                     // LZ4 decompression speed (single-threaded, from benchmarks)
+		BlockSizeKB:                      4,                        // 4 KB block size (RocksDB default, verified in source)
 		MaxBackgroundJobs:                2,                        // 2 parallel compactions (RocksDB default)
 		MaxSubcompactions:                1,                        // No intra-compaction parallelism (RocksDB default)
 		MaxCompactionBytesMB:             1600,                     // 25x target_file_size_base (RocksDB typical default)
@@ -244,7 +255,10 @@ func ThreeLevelConfig() SimConfig {
 		TargetFileSizeMB:                 64,                       // 64MB SST files
 		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level
 		DeduplicationFactor:              0.9,                      // 10% logical reduction
-		CompressionFactor:                0.7,                      // 30% physical reduction (1.4x Snappy)
+		CompressionFactor:                0.85,                     // 15% physical reduction with 4KB blocks (LZ4/Snappy)
+		CompressionThroughputMBps:        750,                      // LZ4 compression speed
+		DecompressionThroughputMBps:      3700,                     // LZ4 decompression speed
+		BlockSizeKB:                      4,                        // 4 KB block size (RocksDB default)
 		MaxBackgroundJobs:                2,                        // 2 parallel compactions
 		MaxSubcompactions:                1,                        // No intra-compaction parallelism
 		IOLatencyMs:                      5.0,                      // 5ms seek time
@@ -292,6 +306,15 @@ func (c *SimConfig) Validate() error {
 	if c.CompressionFactor < 0.1 || c.CompressionFactor > 1.0 {
 		return ErrInvalidConfig("compressionFactor must be between 0.1 and 1.0")
 	}
+	if c.CompressionThroughputMBps < 0 {
+		return ErrInvalidConfig("compressionThroughputMBps must be >= 0 (0 = infinite/no CPU cost)")
+	}
+	if c.DecompressionThroughputMBps < 0 {
+		return ErrInvalidConfig("decompressionThroughputMBps must be >= 0 (0 = infinite/no CPU cost)")
+	}
+	if c.BlockSizeKB < 1 || c.BlockSizeKB > 1024 {
+		return ErrInvalidConfig("blockSizeKB must be between 1 and 1024")
+	}
 	if c.MaxBackgroundJobs < 1 {
 		return ErrInvalidConfig("maxBackgroundJobs must be >= 1")
 	}
@@ -315,4 +338,50 @@ func (c *SimConfig) Validate() error {
 	}
 	// CompactionStyle validation: type-safe enum, no additional validation needed
 	return nil
+}
+
+// ================================
+// Compression Presets
+// ================================
+// Based on real-world benchmarks (single-threaded performance)
+// Source: https://github.com/lz4/lz4, https://github.com/google/snappy, https://facebook.github.io/zstd/
+
+// WithLZ4Compression configures the simulator to use LZ4 compression characteristics
+// LZ4 is RocksDB's default and provides very fast decompression with decent compression ratio
+// Typical use case: Balanced performance for most workloads
+func (c *SimConfig) WithLZ4Compression() *SimConfig {
+	c.CompressionFactor = 0.85               // ~15% size reduction with 4KB blocks
+	c.CompressionThroughputMBps = 750        // LZ4 compression speed (MB/s, single-threaded)
+	c.DecompressionThroughputMBps = 3700     // LZ4 decompression speed (MB/s, single-threaded)
+	return c
+}
+
+// WithSnappyCompression configures the simulator to use Snappy compression characteristics
+// Snappy is slightly slower than LZ4 but was RocksDB's original default
+// Typical use case: Legacy compatibility or when moderate CPU usage is acceptable
+func (c *SimConfig) WithSnappyCompression() *SimConfig {
+	c.CompressionFactor = 0.83               // ~17% size reduction with 4KB blocks
+	c.CompressionThroughputMBps = 530        // Snappy compression speed (MB/s, single-threaded)
+	c.DecompressionThroughputMBps = 1800     // Snappy decompression speed (MB/s, single-threaded)
+	return c
+}
+
+// WithZstdCompression configures the simulator to use Zstandard compression characteristics
+// Zstd provides better compression ratio at the cost of slower compression speed
+// Typical use case: Storage-optimized workloads where CPU is abundant and I/O is expensive
+func (c *SimConfig) WithZstdCompression() *SimConfig {
+	c.CompressionFactor = 0.70               // ~30% size reduction with 4KB blocks (level 3 default)
+	c.CompressionThroughputMBps = 470        // Zstd compression speed (MB/s, single-threaded, level 3)
+	c.DecompressionThroughputMBps = 1380     // Zstd decompression speed (MB/s, single-threaded)
+	return c
+}
+
+// WithNoCompression configures the simulator to disable compression
+// Useful for workloads where data is already compressed or incompressible
+// Typical use case: Pre-compressed data (images, video) or maximum CPU conservation
+func (c *SimConfig) WithNoCompression() *SimConfig {
+	c.CompressionFactor = 1.0                // No compression (1:1 ratio)
+	c.CompressionThroughputMBps = 0          // No CPU cost (infinite throughput)
+	c.DecompressionThroughputMBps = 0        // No CPU cost (infinite throughput)
+	return c
 }

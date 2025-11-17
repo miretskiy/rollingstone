@@ -104,6 +104,12 @@ export function SimulationControls() {
   const enableWAL = useStore(state => state.config.enableWAL ?? true);
   const walSync = useStore(state => state.config.walSync ?? true);
   const queueMode = trafficDist?.queueMode || 'drop';
+
+  // Compression configuration (must be at top level for hooks)
+  const compressionFactor = useStore(state => state.config.compressionFactor) || 0.85;
+  const compressionThroughputMBps = useStore(state => state.config.compressionThroughputMBps) || 750;
+  const decompressionThroughputMBps = useStore(state => state.config.decompressionThroughputMBps) || 3700;
+  const blockSizeKB = useStore(state => state.config.blockSizeKB) || 4;
   
   // Extract all overlap distribution values
   const overlapDist = useStore(state => state.config.overlapDistribution);
@@ -395,16 +401,19 @@ export function SimulationControls() {
           {expandedSections.workload && (
             <div className="p-3 bg-dark-card">
               {/* Traffic Model Selector */}
-              <div className="mb-3 pb-3 border-b border-dark-border">
-                <label className="text-sm text-gray-300 flex items-center gap-1 mb-2">
-                  Traffic Model
-                  <div className="group relative">
-                    <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                    <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
-                      Choose traffic distribution model: Constant Rate (simple) or Advanced (ON/OFF with spikes)
+              <div className="mb-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
+                    Traffic Model
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
+                        Choose traffic distribution model: Constant Rate (simple) or Advanced (ON/OFF with spikes)
+                      </div>
                     </div>
-                  </div>
-                </label>
+                  </h4>
+                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
@@ -537,22 +546,157 @@ export function SimulationControls() {
                 )}
                 <ConfigInput label="Deduplication Factor" field="deduplicationFactor" min={0.1} max={1.0}
                   tooltip="Logical size after deduplication (0.9 = 10% from tombstones/overwrites, 1.0 = no dedup)" />
-                <ConfigInput label="Compression Factor" field="compressionFactor" min={0.1} max={1.0}
-                  tooltip="Physical size after compression (0.7 = 1.4x typical Snappy, 0.4 = 2.5x Zstd, 1.0 = no compression)" />
+              </div>
+
+              {/* Compression Configuration */}
+              <div className="mt-4 mb-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
+                    Compression
+                    <div className="group relative">
+                      <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-72 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
+                        Compression settings affect physical storage size, CPU overhead, and operation latency. Compression/decompression adds CPU time to compaction and flush operations, which is modeled additively (compress → write → seek). Slower compression speeds increase compaction duration. Choose a preset algorithm or customize parameters for your workload.
+                      </div>
+                    </div>
+                  </h4>
+                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
+                </div>
+                <div className="flex gap-2 mb-3">
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({
+                        compressionFactor: 0.85,
+                        compressionThroughputMBps: 750,
+                        decompressionThroughputMBps: 3700,
+                        blockSizeKB: 4,
+                      });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      Math.abs(compressionFactor - 0.85) < 0.01 &&
+                      Math.abs(compressionThroughputMBps - 750) < 10 &&
+                      Math.abs(decompressionThroughputMBps - 3700) < 10 &&
+                      blockSizeKB === 4
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    LZ4
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({
+                        compressionFactor: 0.83,
+                        compressionThroughputMBps: 530,
+                        decompressionThroughputMBps: 1800,
+                        blockSizeKB: 4,
+                      });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      Math.abs(compressionFactor - 0.83) < 0.01 &&
+                      Math.abs(compressionThroughputMBps - 530) < 10 &&
+                      Math.abs(decompressionThroughputMBps - 1800) < 10 &&
+                      blockSizeKB === 4
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    Snappy
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({
+                        compressionFactor: 0.70,
+                        compressionThroughputMBps: 470,
+                        decompressionThroughputMBps: 1380,
+                        blockSizeKB: 4,
+                      });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      Math.abs(compressionFactor - 0.70) < 0.01 &&
+                      Math.abs(compressionThroughputMBps - 470) < 10 &&
+                      Math.abs(decompressionThroughputMBps - 1380) < 10 &&
+                      blockSizeKB === 4
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    Zstd
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({
+                        compressionFactor: 1.0,
+                        compressionThroughputMBps: 0,
+                        decompressionThroughputMBps: 0,
+                        blockSizeKB: 4,
+                      });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      Math.abs(compressionFactor - 1.0) < 0.01 &&
+                      compressionThroughputMBps === 0 &&
+                      decompressionThroughputMBps === 0
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    None
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <ConfigInput
+                    label="Compression Factor"
+                    field="compressionFactor"
+                    min={0.1}
+                    max={1.0}
+                    tooltip="Physical size after compression (0.85 = 15% reduction with LZ4, 0.70 = 30% with Zstd, 1.0 = no compression)" />
+                  <ConfigInput
+                    label="Block Size"
+                    field="blockSizeKB"
+                    min={1}
+                    max={64}
+                    unit="KB"
+                    tooltip="SST block size (RocksDB default: 4 KB). Larger blocks improve compression ratio but increase bytes read/decompressed per key lookup. Smaller blocks reduce per-read overhead but compress less efficiently." />
+                  <ConfigInput
+                    label="Compression Speed"
+                    field="compressionThroughputMBps"
+                    min={0}
+                    max={5000}
+                    unit="MB/s"
+                    tooltip="CPU throughput for compression (0 = infinite/no CPU cost). LZ4: 750 MB/s, Snappy: 530 MB/s, Zstd: 470 MB/s (single-threaded)" />
+                  <ConfigInput
+                    label="Decompression Speed"
+                    field="decompressionThroughputMBps"
+                    min={0}
+                    max={10000}
+                    unit="MB/s"
+                    tooltip="CPU throughput for decompression (0 = infinite/no CPU cost). LZ4: 3700 MB/s, Snappy: 1800 MB/s, Zstd: 1380 MB/s (single-threaded)" />
+                </div>
               </div>
               
               {/* Overlap Distribution Controls */}
-              <div className="mt-3 pb-3 border-b border-dark-border">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <label className="text-sm text-gray-300 flex items-center gap-1">
-                    Overlap Distribution:
+              <div className="mt-4 mb-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <h4 className="text-xs font-semibold text-gray-400 uppercase whitespace-nowrap flex items-center gap-1">
+                    Overlap Distribution
                     <div className="group relative">
                       <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
-                      <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                      <div className="absolute left-0 top-full mt-2 hidden group-hover:block z-[60] w-64 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg normal-case whitespace-normal">
                         Controls how many overlapping files are selected from the target level during compaction. This affects write amplification and compaction size. The overlap pattern depends on your workload: uniform writes create many overlaps, skewed workloads create fewer. Uniform: equal probability for any overlap count. Geometric: favors fewer overlaps (good for balanced workloads). Exponential: strongly favors fewer overlaps (good for skewed workloads).
                       </div>
                     </div>
-                  </label>
+                  </h4>
+                  <div className="h-px flex-1 bg-gradient-to-r from-gray-600 to-transparent"></div>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
                   <select
                     value={overlapDistType}
                     onChange={(e) => {

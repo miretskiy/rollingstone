@@ -752,9 +752,18 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		//   - Captures: I/O contention between flush and compaction
 		//   - Missing: Dynamic write throttling, I/O prioritization
 		//   - Impact: Minor - we model the dominant effect (disk saturation)
-		ioTimeSec := sizeMB / s.config.IOThroughputMBps
+		// Calculate flush duration using ADDITIVE MODEL
+		// Flush process: compress memtable → write compressed data to L0 file
+		// Operations are sequential: compress + write I/O + seek
+		var compressTimeSec float64
+		if s.config.CompressionThroughputMBps > 0 {
+			compressTimeSec = sizeMB / s.config.CompressionThroughputMBps
+		}
+		// After compression, the actual data written is reduced by compression factor
+		outputSizeMB := sizeMB * s.config.CompressionFactor
+		ioTimeSec := outputSizeMB / s.config.IOThroughputMBps
 		seekTimeSec := s.config.IOLatencyMs / 1000.0
-		flushDuration := ioTimeSec + seekTimeSec
+		flushDuration := compressTimeSec + ioTimeSec + seekTimeSec
 
 		// Flush can only start when disk is free (token bucket model)
 		flushStartTime := max(s.virtualTime, s.diskBusyUntil)
@@ -1090,9 +1099,20 @@ func (s *Simulator) tryScheduleCompaction() bool {
 			subOutputSize := subInputSize * deduplicationFactor * s.config.CompressionFactor
 
 			// Calculate duration for this subcompaction
-			subIOTimeSec := (subInputSize + subOutputSize) / s.config.IOThroughputMBps
+			// ADDITIVE MODEL: read I/O + decompress + compress + write I/O (sequential operations)
+			readIOTimeSec := subInputSize / s.config.IOThroughputMBps
+			var decompressTimeSec float64
+			if s.config.DecompressionThroughputMBps > 0 {
+				decompressTimeSec = subInputSize / s.config.DecompressionThroughputMBps
+			}
+			var compressTimeSec float64
+			if s.config.CompressionThroughputMBps > 0 {
+				compressTimeSec = subOutputSize / s.config.CompressionThroughputMBps
+			}
+			writeIOTimeSec := subOutputSize / s.config.IOThroughputMBps
 			subSeekTimeSec := s.config.IOLatencyMs / 1000.0
-			subDuration := subIOTimeSec + subSeekTimeSec
+
+			subDuration := readIOTimeSec + decompressTimeSec + compressTimeSec + writeIOTimeSec + subSeekTimeSec
 
 			if subDuration > maxSubcompactionDuration {
 				maxSubcompactionDuration = subDuration
@@ -1125,10 +1145,22 @@ func (s *Simulator) tryScheduleCompaction() bool {
 		}
 		outputSize = inputSize * deduplicationFactor * s.config.CompressionFactor
 
-		// Calculate compaction duration: time to read input + write output
-		ioTimeSec := (inputSize + outputSize) / s.config.IOThroughputMBps
+		// Calculate compaction duration using ADDITIVE MODEL
+		// Compaction process: read input → decompress → merge → compress → write output
+		// All operations are sequential (cannot compress before decompressing input)
+		readIOTimeSec := inputSize / s.config.IOThroughputMBps
+		var decompressTimeSec float64
+		if s.config.DecompressionThroughputMBps > 0 {
+			decompressTimeSec = inputSize / s.config.DecompressionThroughputMBps
+		}
+		var compressTimeSec float64
+		if s.config.CompressionThroughputMBps > 0 {
+			compressTimeSec = outputSize / s.config.CompressionThroughputMBps
+		}
+		writeIOTimeSec := outputSize / s.config.IOThroughputMBps
 		seekTimeSec := s.config.IOLatencyMs / 1000.0
-		compactionDuration = ioTimeSec + seekTimeSec
+
+		compactionDuration = readIOTimeSec + decompressTimeSec + compressTimeSec + writeIOTimeSec + seekTimeSec
 	}
 
 	// Compaction can only start when disk is free

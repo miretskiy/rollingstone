@@ -206,6 +206,11 @@ func (s *Simulator) ensureEventsScheduled() {
 	// Always schedule compaction checks
 	s.scheduleNextCompactionCheck(s.virtualTime)
 
+	// Schedule read batch processing (if reads enabled and rate > 0)
+	if s.config.ReadWorkload != nil && s.config.ReadWorkload.RequestsPerSec > 0 {
+		s.scheduleNextScheduleRead(s.virtualTime)
+	}
+
 	writeRateStr := fmt.Sprintf("%.1f MB/s", writeRate)
 	if s.config.TrafficDistribution.Model == TrafficModelAdvancedONOFF {
 		writeRateStr = fmt.Sprintf("advanced (base=%.1f MB/s)", s.config.TrafficDistribution.BaseRateMBps)
@@ -621,6 +626,12 @@ func (s *Simulator) processEvent(event Event) {
 		s.processCompactionCheck(e)
 	case *ScheduleWriteEvent:
 		s.processScheduleWrite(e)
+	case *WALWriteEvent:
+		s.processWALWrite(e)
+	case *ScheduleReadEvent:
+		s.processScheduleRead(e)
+	case *ReadBatchEvent:
+		s.processReadBatch(e)
 	default:
 		panic(fmt.Sprintf("unknown event type: %T", e))
 	}
@@ -747,6 +758,11 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		// Calculate and reserve disk bandwidth for WAL write
 		walBandwidthMBps := walSizeMB / walDuration
 		s.disk.Reserve(walBandwidthMBps)
+
+		// Schedule WAL completion event to refund bandwidth
+		walEvent := NewWALWriteEvent(walCompleteTime, walStartTime, walSizeMB)
+		walEvent.SetBandwidthMBps(walBandwidthMBps)
+		s.queue.Push(walEvent)
 
 		// Track WAL bytes separately (NOT included in LSM write amplification)
 		// RocksDB's write amplification metric measures LSM compaction overhead only,
@@ -928,6 +944,110 @@ func (s *Simulator) processFlush(event *FlushEvent) {
 
 	// Compactions are handled by periodic CompactionCheckEvent, not triggered by flushes
 	// This is acceptable - RocksDB also uses background threads that wake up periodically
+}
+
+// processWALWrite handles WAL write completion and refunds disk bandwidth
+func (s *Simulator) processWALWrite(event *WALWriteEvent) {
+	// WAL write is complete - refund disk bandwidth tokens
+	if event.BandwidthMBps() > 0 {
+		s.disk.Refund(event.BandwidthMBps())
+	}
+	// Note: WAL bytes and activity tracking are done in processWrite() before scheduling this event
+}
+
+// processScheduleRead processes read batch scheduling and reserves disk bandwidth
+func (s *Simulator) processScheduleRead(event *ScheduleReadEvent) {
+	// Check if reads are enabled
+	if s.config.ReadWorkload == nil {
+		return // Reads disabled
+	}
+
+	// Read batch interval: process reads in 1 second batches (like compaction checks)
+	readBatchIntervalSec := 1.0
+
+	// Calculate total requests in this batch period
+	totalRequestsPerSec := s.config.ReadWorkload.RequestsPerSec
+	if totalRequestsPerSec <= 0 {
+		// No reads to schedule - but still schedule next check
+		s.scheduleNextScheduleRead(s.virtualTime + readBatchIntervalSec)
+		return
+	}
+
+	// Total requests in this batch interval
+	totalRequests := int(totalRequestsPerSec * readBatchIntervalSec)
+	if totalRequests == 0 {
+		// Too few requests to schedule - skip this batch
+		s.scheduleNextScheduleRead(s.virtualTime + readBatchIntervalSec)
+		return
+	}
+
+	// Break down requests by type
+	cacheHits := int(float64(totalRequests) * s.config.ReadWorkload.CacheHitRate)
+	bloomNegatives := int(float64(totalRequests) * s.config.ReadWorkload.BloomNegativeRate)
+	scans := int(float64(totalRequests) * s.config.ReadWorkload.ScanRate)
+	pointLookups := totalRequests - cacheHits - bloomNegatives - scans
+
+	// Calculate disk bandwidth needed for this batch
+	// Cache hits and bloom negatives don't use disk I/O
+	// Point lookups read: blockSize * readAmp bytes per request
+	// Scans read: avgScanSizeKB bytes per request
+
+	// Get read amplification from metrics (calculated from LSM structure)
+	readAmp := s.metrics.ReadAmplification
+	if readAmp < 1.0 {
+		readAmp = 1.0 // At minimum, one file must be read
+	}
+
+	blockSizeMB := float64(s.config.BlockSizeKB) / 1024.0
+	scanSizeMB := s.config.ReadWorkload.AvgScanSizeKB / 1024.0
+
+	pointLookupMB := float64(pointLookups) * blockSizeMB * readAmp
+	scanMB := float64(scans) * scanSizeMB
+	totalReadMB := pointLookupMB + scanMB
+
+	if totalReadMB <= 0 {
+		// No disk I/O needed for this batch (all cache hits/bloom negatives)
+		s.scheduleNextScheduleRead(s.virtualTime + readBatchIntervalSec)
+		return
+	}
+
+	// Calculate duration based on disk I/O
+	// Duration = data_size / throughput + latency
+	ioTimeSec := totalReadMB / s.config.IOThroughputMBps
+	latencySec := s.config.IOLatencyMs / 1000.0
+	readDuration := ioTimeSec + latencySec
+
+	// Calculate and reserve disk bandwidth
+	readBandwidthMBps := totalReadMB / readDuration
+	s.disk.Reserve(readBandwidthMBps)
+
+	// Schedule read batch completion event
+	readStartTime := s.virtualTime
+	readCompleteTime := readStartTime + readDuration
+	readEvent := NewReadBatchEvent(readCompleteTime, readStartTime, totalRequests, pointLookups, scans, cacheHits, bloomNegatives)
+	readEvent.SetBandwidthMBps(readBandwidthMBps)
+	s.queue.Push(readEvent)
+
+	// Schedule next ScheduleReadEvent
+	s.scheduleNextScheduleRead(s.virtualTime + readBatchIntervalSec)
+}
+
+// processReadBatch handles read batch completion and refunds disk bandwidth
+func (s *Simulator) processReadBatch(event *ReadBatchEvent) {
+	// Read batch is complete - refund disk bandwidth tokens
+	if event.BandwidthMBps() > 0 {
+		s.disk.Refund(event.BandwidthMBps())
+	}
+	// Note: Read metrics are tracked separately by the metrics system
+}
+
+// scheduleNextScheduleRead schedules the next ScheduleReadEvent
+func (s *Simulator) scheduleNextScheduleRead(nextTime float64) {
+	// Only schedule if reads are enabled (ReadWorkload != nil and RequestsPerSec > 0)
+	if s.config.ReadWorkload == nil || s.config.ReadWorkload.RequestsPerSec <= 0 {
+		return
+	}
+	s.queue.Push(NewScheduleReadEvent(nextTime))
 }
 
 // processCompaction processes a compaction event

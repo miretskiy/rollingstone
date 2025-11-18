@@ -85,9 +85,6 @@ export function MetricsDashboard() {
         return `${(mb / (1024 * 1024)).toFixed(1)} TB`;
     };
 
-    // Get instantaneous active compaction count (for color/animation)
-    const activeCompactionCount = currentState?.activeCompactions ?? 0;
-
     return (
         <div className="space-y-6">
             {/* Key Metrics Cards */}

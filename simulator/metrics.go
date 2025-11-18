@@ -77,10 +77,10 @@ type Metrics struct {
 	IsOOMKilled          bool    `json:"isOOMKilled"`          // Whether simulation was killed due to OOM
 
 	// Read path metrics (statistical model - no discrete read events)
-	AvgReadLatencyMs     float64 `json:"avgReadLatencyMs"`     // Average read latency across all request types
-	P50ReadLatencyMs     float64 `json:"p50ReadLatencyMs"`     // P50 (median) read latency
-	P99ReadLatencyMs     float64 `json:"p99ReadLatencyMs"`     // P99 read latency
-	ReadBandwidthMBps    float64 `json:"readBandwidthMBps"`    // Disk bandwidth consumed by reads
+	AvgReadLatencyMs      float64 `json:"avgReadLatencyMs"`      // Average read latency across all request types
+	P50ReadLatencyMs      float64 `json:"p50ReadLatencyMs"`      // P50 (median) read latency
+	P99ReadLatencyMs      float64 `json:"p99ReadLatencyMs"`      // P99 read latency
+	ReadBandwidthMBps     float64 `json:"readBandwidthMBps"`     // Disk bandwidth consumed by reads
 	CurrentReadReqsPerSec float64 `json:"currentReadReqsPerSec"` // Current actual read requests/sec (with variability applied)
 
 	// Read request type breakdown (requests per second)
@@ -188,7 +188,7 @@ func (m *Metrics) RecordWALWrite(startTime, endTime, sizeMB float64) {
 		StartTime: startTime,
 		EndTime:   endTime,
 		SizeMB:    sizeMB,
-		InputMB:   0, // WAL is write-only, no input
+		InputMB:   0,  // WAL is write-only, no input
 		Level:     -2, // Special marker for WAL writes
 		ToLevel:   -2,
 	})

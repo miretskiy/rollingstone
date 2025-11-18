@@ -13,8 +13,8 @@ func TestDynamicBaseLevel_MovesUpAsDataGrows(t *testing.T) {
 	config.LevelCompactionDynamicLevelBytes = true
 	config.CompactionStyle = CompactionStyleLeveled
 	config.NumLevels = 7
-	config.MaxBytesForLevelBaseMB = 256  // 256 MB base
-	config.LevelMultiplier = 10          // 10x multiplier
+	config.MaxBytesForLevelBaseMB = 256 // 256 MB base
+	config.LevelMultiplier = 10         // 10x multiplier
 
 	t.Run("Small L6 - base level stays at L6", func(t *testing.T) {
 		lsm := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
@@ -165,4 +165,3 @@ func TestDynamicBaseLevel_MatchesCalculateLevelTargets(t *testing.T) {
 		})
 	}
 }
-

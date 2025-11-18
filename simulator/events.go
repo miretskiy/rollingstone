@@ -94,11 +94,11 @@ func NewFlushEvent(timestamp, startTime, sizeMB float64) *FlushEvent {
 	}
 }
 
-func (e *FlushEvent) Timestamp() float64     { return e.timestamp }
-func (e *FlushEvent) StartTime() float64     { return e.startTime }
-func (e *FlushEvent) Type() EventType        { return EventTypeFlush }
-func (e *FlushEvent) SizeMB() float64        { return e.sizeMB }
-func (e *FlushEvent) BandwidthMBps() float64 { return e.bandwidthMBps }
+func (e *FlushEvent) Timestamp() float64          { return e.timestamp }
+func (e *FlushEvent) StartTime() float64          { return e.startTime }
+func (e *FlushEvent) Type() EventType             { return EventTypeFlush }
+func (e *FlushEvent) SizeMB() float64             { return e.sizeMB }
+func (e *FlushEvent) BandwidthMBps() float64      { return e.bandwidthMBps }
 func (e *FlushEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
 func (e *FlushEvent) String() string {
 	return fmt.Sprintf("Flush(t=%.3fs, size=%.2fMB)", e.timestamp, e.sizeMB)
@@ -219,11 +219,11 @@ func NewWALWriteEvent(timestamp, startTime, sizeMB float64) *WALWriteEvent {
 	}
 }
 
-func (e *WALWriteEvent) Timestamp() float64     { return e.timestamp }
-func (e *WALWriteEvent) StartTime() float64     { return e.startTime }
-func (e *WALWriteEvent) Type() EventType        { return EventTypeWALWrite }
-func (e *WALWriteEvent) SizeMB() float64        { return e.sizeMB }
-func (e *WALWriteEvent) BandwidthMBps() float64 { return e.bandwidthMBps }
+func (e *WALWriteEvent) Timestamp() float64          { return e.timestamp }
+func (e *WALWriteEvent) StartTime() float64          { return e.startTime }
+func (e *WALWriteEvent) Type() EventType             { return EventTypeWALWrite }
+func (e *WALWriteEvent) SizeMB() float64             { return e.sizeMB }
+func (e *WALWriteEvent) BandwidthMBps() float64      { return e.bandwidthMBps }
 func (e *WALWriteEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
 func (e *WALWriteEvent) String() string {
 	return fmt.Sprintf("WALWrite(t=%.3fs, size=%.2fMB)", e.timestamp, e.sizeMB)
@@ -250,14 +250,14 @@ func (e *ScheduleReadEvent) String() string {
 // ReadBatchEvent represents an aggregate of read requests processed together
 // This avoids creating thousands of individual read events
 type ReadBatchEvent struct {
-	timestamp           float64
-	startTime           float64 // When the read batch started
-	totalRequests       int     // Total number of read requests
-	pointLookups        int     // Number of point lookups
-	scans               int     // Number of scans
-	cacheHits           int     // Number of cache hits
-	bloomNegatives      int     // Number of bloom filter negatives
-	bandwidthMBps       float64 // Disk bandwidth reserved for this read batch
+	timestamp      float64
+	startTime      float64 // When the read batch started
+	totalRequests  int     // Total number of read requests
+	pointLookups   int     // Number of point lookups
+	scans          int     // Number of scans
+	cacheHits      int     // Number of cache hits
+	bloomNegatives int     // Number of bloom filter negatives
+	bandwidthMBps  float64 // Disk bandwidth reserved for this read batch
 }
 
 func NewReadBatchEvent(timestamp, startTime float64, totalRequests, pointLookups, scans, cacheHits, bloomNegatives int) *ReadBatchEvent {
@@ -273,15 +273,15 @@ func NewReadBatchEvent(timestamp, startTime float64, totalRequests, pointLookups
 	}
 }
 
-func (e *ReadBatchEvent) Timestamp() float64      { return e.timestamp }
-func (e *ReadBatchEvent) StartTime() float64      { return e.startTime }
-func (e *ReadBatchEvent) Type() EventType         { return EventTypeReadBatch }
-func (e *ReadBatchEvent) TotalRequests() int      { return e.totalRequests }
-func (e *ReadBatchEvent) PointLookups() int       { return e.pointLookups }
-func (e *ReadBatchEvent) Scans() int              { return e.scans }
-func (e *ReadBatchEvent) CacheHits() int          { return e.cacheHits }
-func (e *ReadBatchEvent) BloomNegatives() int     { return e.bloomNegatives }
-func (e *ReadBatchEvent) BandwidthMBps() float64  { return e.bandwidthMBps }
+func (e *ReadBatchEvent) Timestamp() float64          { return e.timestamp }
+func (e *ReadBatchEvent) StartTime() float64          { return e.startTime }
+func (e *ReadBatchEvent) Type() EventType             { return EventTypeReadBatch }
+func (e *ReadBatchEvent) TotalRequests() int          { return e.totalRequests }
+func (e *ReadBatchEvent) PointLookups() int           { return e.pointLookups }
+func (e *ReadBatchEvent) Scans() int                  { return e.scans }
+func (e *ReadBatchEvent) CacheHits() int              { return e.cacheHits }
+func (e *ReadBatchEvent) BloomNegatives() int         { return e.bloomNegatives }
+func (e *ReadBatchEvent) BandwidthMBps() float64      { return e.bandwidthMBps }
 func (e *ReadBatchEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
 func (e *ReadBatchEvent) String() string {
 	return fmt.Sprintf("ReadBatch(t=%.3fs, requests=%d)", e.timestamp, e.totalRequests)

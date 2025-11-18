@@ -33,8 +33,8 @@ func TestUniversalCompactionL2BaseLevelRegression(t *testing.T) {
 		baseLevel     int
 		l2FileCount   int
 		l2SizeMB      float64
-		compactions   int // Active compaction count
-		hasProgressed bool  // True if base level moved or L2 changed
+		compactions   int  // Active compaction count
+		hasProgressed bool // True if base level moved or L2 changed
 	}
 
 	states := make([]StepState, 0)

@@ -101,10 +101,10 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 	}
 
 	sim := &Simulator{
-		config:  config,
-		lsm:     lsm,
-		metrics: NewMetrics(),
-		queue:   NewEventQueue(),
+		config:      config,
+		lsm:         lsm,
+		metrics:     NewMetrics(),
+		queue:       NewEventQueue(),
 		virtualTime: 0,
 		disk: &Disk{
 			TotalBandwidthMBps:     float64(config.IOThroughputMBps),

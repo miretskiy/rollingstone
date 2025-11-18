@@ -162,10 +162,10 @@ func TestReadBandwidth(t *testing.T) {
 
 	workload := DefaultReadWorkload()
 	workload.Enabled = true
-	workload.RequestsPerSec = 1000 // 1000 reads/sec
-	workload.CacheHitRate = 0.90   // 90% cache hits (0 bandwidth)
+	workload.RequestsPerSec = 1000    // 1000 reads/sec
+	workload.CacheHitRate = 0.90      // 90% cache hits (0 bandwidth)
 	workload.BloomNegativeRate = 0.02 // 2% bloom negatives (0 bandwidth)
-	workload.ScanRate = 0.05 // 5% scans
+	workload.ScanRate = 0.05          // 5% scans
 	// Remaining 3% are point lookups
 
 	metrics := NewMetrics()

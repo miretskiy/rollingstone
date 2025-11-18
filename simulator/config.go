@@ -100,9 +100,9 @@ type OverlapDistributionConfig struct {
 type LatencyDistributionType string
 
 const (
-	LatencyDistFixed     LatencyDistributionType = "fixed"     // Fixed latency (deterministic)
+	LatencyDistFixed     LatencyDistributionType = "fixed"       // Fixed latency (deterministic)
 	LatencyDistExp       LatencyDistributionType = "exponential" // Exponential distribution
-	LatencyDistLognormal LatencyDistributionType = "lognormal" // Lognormal distribution
+	LatencyDistLognormal LatencyDistributionType = "lognormal"   // Lognormal distribution
 )
 
 // LatencySpec specifies a latency distribution for read operations
@@ -427,9 +427,9 @@ func (c *SimConfig) Validate() error {
 // LZ4 is RocksDB's default and provides very fast decompression with decent compression ratio
 // Typical use case: Balanced performance for most workloads
 func (c *SimConfig) WithLZ4Compression() *SimConfig {
-	c.CompressionFactor = 0.85               // ~15% size reduction with 4KB blocks
-	c.CompressionThroughputMBps = 750        // LZ4 compression speed (MB/s, single-threaded)
-	c.DecompressionThroughputMBps = 3700     // LZ4 decompression speed (MB/s, single-threaded)
+	c.CompressionFactor = 0.85           // ~15% size reduction with 4KB blocks
+	c.CompressionThroughputMBps = 750    // LZ4 compression speed (MB/s, single-threaded)
+	c.DecompressionThroughputMBps = 3700 // LZ4 decompression speed (MB/s, single-threaded)
 	return c
 }
 
@@ -437,9 +437,9 @@ func (c *SimConfig) WithLZ4Compression() *SimConfig {
 // Snappy is slightly slower than LZ4 but was RocksDB's original default
 // Typical use case: Legacy compatibility or when moderate CPU usage is acceptable
 func (c *SimConfig) WithSnappyCompression() *SimConfig {
-	c.CompressionFactor = 0.83               // ~17% size reduction with 4KB blocks
-	c.CompressionThroughputMBps = 530        // Snappy compression speed (MB/s, single-threaded)
-	c.DecompressionThroughputMBps = 1800     // Snappy decompression speed (MB/s, single-threaded)
+	c.CompressionFactor = 0.83           // ~17% size reduction with 4KB blocks
+	c.CompressionThroughputMBps = 530    // Snappy compression speed (MB/s, single-threaded)
+	c.DecompressionThroughputMBps = 1800 // Snappy decompression speed (MB/s, single-threaded)
 	return c
 }
 
@@ -447,9 +447,9 @@ func (c *SimConfig) WithSnappyCompression() *SimConfig {
 // Zstd provides better compression ratio at the cost of slower compression speed
 // Typical use case: Storage-optimized workloads where CPU is abundant and I/O is expensive
 func (c *SimConfig) WithZstdCompression() *SimConfig {
-	c.CompressionFactor = 0.70               // ~30% size reduction with 4KB blocks (level 3 default)
-	c.CompressionThroughputMBps = 470        // Zstd compression speed (MB/s, single-threaded, level 3)
-	c.DecompressionThroughputMBps = 1380     // Zstd decompression speed (MB/s, single-threaded)
+	c.CompressionFactor = 0.70           // ~30% size reduction with 4KB blocks (level 3 default)
+	c.CompressionThroughputMBps = 470    // Zstd compression speed (MB/s, single-threaded, level 3)
+	c.DecompressionThroughputMBps = 1380 // Zstd decompression speed (MB/s, single-threaded)
 	return c
 }
 
@@ -457,8 +457,8 @@ func (c *SimConfig) WithZstdCompression() *SimConfig {
 // Useful for workloads where data is already compressed or incompressible
 // Typical use case: Pre-compressed data (images, video) or maximum CPU conservation
 func (c *SimConfig) WithNoCompression() *SimConfig {
-	c.CompressionFactor = 1.0                // No compression (1:1 ratio)
-	c.CompressionThroughputMBps = 0          // No CPU cost (infinite throughput)
-	c.DecompressionThroughputMBps = 0        // No CPU cost (infinite throughput)
+	c.CompressionFactor = 1.0         // No compression (1:1 ratio)
+	c.CompressionThroughputMBps = 0   // No CPU cost (infinite throughput)
+	c.DecompressionThroughputMBps = 0 // No CPU cost (infinite throughput)
 	return c
 }

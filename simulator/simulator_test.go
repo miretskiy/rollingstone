@@ -1615,7 +1615,7 @@ func TestDiskUtilization_CalculatedFromThroughput(t *testing.T) {
 // Test that disk utilization is capped at 100% even when throughput exceeds capacity
 func TestDiskUtilization_CappedAt100Percent(t *testing.T) {
 	config := DefaultConfig()
-	config.WriteRateMBps = 100.0 // High write rate
+	config.WriteRateMBps = 100.0   // High write rate
 	config.IOThroughputMBps = 50.0 // Low disk throughput - will saturate
 	config.EnableWAL = true
 	config.MaxBackgroundJobs = 8

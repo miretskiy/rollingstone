@@ -12,9 +12,9 @@ import (
 func TestParallelCompactions_ReserveBandwidth(t *testing.T) {
 	config := DefaultConfig()
 	config.CompactionStyle = CompactionStyleLeveled
-	config.MaxBackgroundJobs = 4           // Allow 4 parallel compactions
-	config.IOThroughputMBps = 100          // 100 MB/s total disk bandwidth
-	config.WriteRateMBps = 0               // No writes to simplify test
+	config.MaxBackgroundJobs = 4  // Allow 4 parallel compactions
+	config.IOThroughputMBps = 100 // 100 MB/s total disk bandwidth
+	config.WriteRateMBps = 0      // No writes to simplify test
 	config.TrafficDistribution.WriteRateMBps = 0
 
 	sim, err := NewSimulator(config)
@@ -106,9 +106,9 @@ func TestBandwidthRefunding_OnCompletion(t *testing.T) {
 func TestTokenBucketSaturation(t *testing.T) {
 	config := DefaultConfig()
 	config.CompactionStyle = CompactionStyleLeveled
-	config.MaxBackgroundJobs = 10          // Allow many parallel jobs
-	config.IOThroughputMBps = 50           // Limited bandwidth
-	config.WriteRateMBps = 0               // No writes
+	config.MaxBackgroundJobs = 10 // Allow many parallel jobs
+	config.IOThroughputMBps = 50  // Limited bandwidth
+	config.WriteRateMBps = 0      // No writes
 	config.TrafficDistribution.WriteRateMBps = 0
 
 	sim, err := NewSimulator(config)
@@ -214,7 +214,7 @@ func TestReadBatchEvent_Lifecycle(t *testing.T) {
 	bloomNegatives := 100
 
 	// Calculate bandwidth (similar to processScheduleRead)
-	readAmp := 5.0 // Assume 5 files to check
+	readAmp := 5.0              // Assume 5 files to check
 	blockSizeMB := 4.0 / 1024.0 // 4KB blocks
 	scanSizeMB := 16.0 / 1024.0 // 16KB scans
 

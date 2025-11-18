@@ -10,11 +10,11 @@ import (
 func TestConstantTrafficDistribution(t *testing.T) {
 	t.Run("constant rate", func(t *testing.T) {
 		dist := NewConstantTrafficDistribution(10.0)
-		
+
 		// Should always return 1MB writes
 		require.Equal(t, 1.0, dist.NextWriteSizeMB())
 		require.Equal(t, 1.0, dist.NextWriteSizeMB())
-		
+
 		// Interval should be 1MB / 10MB/s = 0.1s
 		interval := dist.NextIntervalSeconds()
 		require.InDelta(t, 0.1, interval, 0.001)
@@ -22,7 +22,7 @@ func TestConstantTrafficDistribution(t *testing.T) {
 
 	t.Run("zero rate", func(t *testing.T) {
 		dist := NewConstantTrafficDistribution(0.0)
-		
+
 		// Should return 0 interval
 		interval := dist.NextIntervalSeconds()
 		require.Equal(t, 0.0, interval)
@@ -30,7 +30,7 @@ func TestConstantTrafficDistribution(t *testing.T) {
 
 	t.Run("negative rate", func(t *testing.T) {
 		dist := NewConstantTrafficDistribution(-5.0)
-		
+
 		// Should return 0 interval
 		interval := dist.NextIntervalSeconds()
 		require.Equal(t, 0.0, interval)
@@ -60,7 +60,7 @@ func TestAdvancedTrafficDistribution(t *testing.T) {
 		// Should generate writes
 		writeSize := dist.NextWriteSizeMB()
 		require.Greater(t, writeSize, 0.0)
-		
+
 		interval := dist.NextIntervalSeconds()
 		require.Greater(t, interval, 0.0)
 	})
@@ -96,7 +96,7 @@ func TestAdvancedTrafficDistribution(t *testing.T) {
 				intervals[i] = effectiveRate
 			}
 		}
-		
+
 		// Most rates should be capped (allowing some variance from lognormal)
 		cappedCount := 0
 		for _, rate := range intervals {
@@ -136,7 +136,7 @@ func TestAdvancedTrafficDistribution(t *testing.T) {
 func TestNewTrafficDistribution(t *testing.T) {
 	t.Run("constant model", func(t *testing.T) {
 		config := TrafficDistributionConfig{
-			Model:        TrafficModelConstant,
+			Model:         TrafficModelConstant,
 			WriteRateMBps: 10.0,
 		}
 		dist := NewTrafficDistribution(config, 42)
@@ -145,14 +145,14 @@ func TestNewTrafficDistribution(t *testing.T) {
 
 	t.Run("advanced model", func(t *testing.T) {
 		config := TrafficDistributionConfig{
-			Model:          TrafficModelAdvancedONOFF,
-			BaseRateMBps:  10.0,
+			Model:           TrafficModelAdvancedONOFF,
+			BaseRateMBps:    10.0,
 			BurstMultiplier: 2.0,
-			LognormalSigma: 0.1,
-			OnMeanSeconds:  5.0,
-			OffMeanSeconds: 10.0,
-			ErlangK:        2,
-			QueueMode:      "drop",
+			LognormalSigma:  0.1,
+			OnMeanSeconds:   5.0,
+			OffMeanSeconds:  10.0,
+			ErlangK:         2,
+			QueueMode:       "drop",
 		}
 		dist := NewTrafficDistribution(config, 42)
 		require.IsType(t, &AdvancedTrafficDistribution{}, dist)
@@ -189,4 +189,3 @@ func TestExponentialSample(t *testing.T) {
 		require.False(t, math.IsInf(interval, 0))
 	}
 }
-

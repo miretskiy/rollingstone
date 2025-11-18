@@ -24,7 +24,7 @@ type Compactor interface {
 
 // CompactionJob describes a compaction operation
 type CompactionJob struct {
-	ID          int          // Unique ID for this compaction job (assigned by simulator)
+	ID          int // Unique ID for this compaction job (assigned by simulator)
 	FromLevel   int
 	ToLevel     int
 	SourceFiles []*SSTFile // Files to compact from source level

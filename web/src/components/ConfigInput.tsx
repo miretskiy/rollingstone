@@ -95,7 +95,7 @@ export function ConfigInput({
                     applyValue();
                 }}
                 disabled={disabled}
-                className="w-28 px-3 py-1 bg-dark-bg border border-dark-border rounded text-right disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-20 px-2 py-1 bg-dark-bg border border-dark-border rounded text-right text-xs disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             />
         </div>
     );

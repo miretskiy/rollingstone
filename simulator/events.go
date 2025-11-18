@@ -70,26 +70,30 @@ func (e *WriteEvent) SizeMB() float64 { return e.sizeMB }
 
 // FlushEvent represents a memtable flush to L0
 type FlushEvent struct {
-	timestamp float64
-	startTime float64 // When the flush started
-	sizeMB    float64
+	timestamp     float64
+	startTime     float64 // When the flush started
+	sizeMB        float64
+	bandwidthMBps float64 // Disk bandwidth reserved for this flush
 }
 
 func NewFlushEvent(timestamp, startTime, sizeMB float64) *FlushEvent {
 	return &FlushEvent{
-		timestamp: timestamp,
-		startTime: startTime,
-		sizeMB:    sizeMB,
+		timestamp:     timestamp,
+		startTime:     startTime,
+		sizeMB:        sizeMB,
+		bandwidthMBps: 0, // Backward compatibility: 0 means no bandwidth tracking
 	}
 }
 
-func (e *FlushEvent) Timestamp() float64 { return e.timestamp }
-func (e *FlushEvent) StartTime() float64 { return e.startTime }
-func (e *FlushEvent) Type() EventType    { return EventTypeFlush }
+func (e *FlushEvent) Timestamp() float64     { return e.timestamp }
+func (e *FlushEvent) StartTime() float64     { return e.startTime }
+func (e *FlushEvent) Type() EventType        { return EventTypeFlush }
+func (e *FlushEvent) SizeMB() float64        { return e.sizeMB }
+func (e *FlushEvent) BandwidthMBps() float64 { return e.bandwidthMBps }
+func (e *FlushEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
 func (e *FlushEvent) String() string {
 	return fmt.Sprintf("Flush(t=%.3fs, size=%.2fMB)", e.timestamp, e.sizeMB)
 }
-func (e *FlushEvent) SizeMB() float64 { return e.sizeMB }
 
 // CompactionEvent represents a compaction from one level to another
 type CompactionEvent struct {
@@ -100,7 +104,8 @@ type CompactionEvent struct {
 	toLevel            int
 	inputSizeMB        float64
 	outputSizeMB       float64
-	subcompactionCount int // Number of subcompactions (0 = single compaction, >0 = subcompactions)
+	subcompactionCount int     // Number of subcompactions (0 = single compaction, >0 = subcompactions)
+	bandwidthMBps      float64 // Disk bandwidth reserved for this compaction
 }
 
 func NewCompactionEvent(timestamp, startTime float64, compactionID, fromLevel, toLevel int, inputSizeMB, outputSizeMB float64) *CompactionEvent {
@@ -113,6 +118,7 @@ func NewCompactionEvent(timestamp, startTime float64, compactionID, fromLevel, t
 		inputSizeMB:        inputSizeMB,
 		outputSizeMB:       outputSizeMB,
 		subcompactionCount: 0, // Default: single compaction
+		bandwidthMBps:      0, // Backward compatibility: 0 means no bandwidth tracking
 	}
 }
 
@@ -127,12 +133,21 @@ func NewCompactionEventWithSubcompactions(timestamp, startTime float64, compacti
 		inputSizeMB:        inputSizeMB,
 		outputSizeMB:       outputSizeMB,
 		subcompactionCount: subcompactionCount,
+		bandwidthMBps:      0, // Backward compatibility: 0 means no bandwidth tracking
 	}
 }
 
-func (e *CompactionEvent) Timestamp() float64 { return e.timestamp }
-func (e *CompactionEvent) StartTime() float64 { return e.startTime }
-func (e *CompactionEvent) Type() EventType    { return EventTypeCompaction }
+func (e *CompactionEvent) Timestamp() float64          { return e.timestamp }
+func (e *CompactionEvent) StartTime() float64          { return e.startTime }
+func (e *CompactionEvent) Type() EventType             { return EventTypeCompaction }
+func (e *CompactionEvent) CompactionID() int           { return e.compactionID }
+func (e *CompactionEvent) FromLevel() int              { return e.fromLevel }
+func (e *CompactionEvent) ToLevel() int                { return e.toLevel }
+func (e *CompactionEvent) InputSizeMB() float64        { return e.inputSizeMB }
+func (e *CompactionEvent) OutputSizeMB() float64       { return e.outputSizeMB }
+func (e *CompactionEvent) SubcompactionCount() int     { return e.subcompactionCount }
+func (e *CompactionEvent) BandwidthMBps() float64      { return e.bandwidthMBps }
+func (e *CompactionEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
 func (e *CompactionEvent) String() string {
 	if e.subcompactionCount > 0 {
 		return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB, %d subcompactions)",
@@ -141,12 +156,6 @@ func (e *CompactionEvent) String() string {
 	return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB)",
 		e.timestamp, e.fromLevel, e.toLevel, e.inputSizeMB, e.outputSizeMB)
 }
-func (e *CompactionEvent) CompactionID() int       { return e.compactionID }
-func (e *CompactionEvent) FromLevel() int          { return e.fromLevel }
-func (e *CompactionEvent) ToLevel() int            { return e.toLevel }
-func (e *CompactionEvent) InputSizeMB() float64    { return e.inputSizeMB }
-func (e *CompactionEvent) OutputSizeMB() float64   { return e.outputSizeMB }
-func (e *CompactionEvent) SubcompactionCount() int { return e.subcompactionCount }
 
 // CompactionCheckEvent represents a periodic check for compactions (simulates background threads)
 type CompactionCheckEvent struct {

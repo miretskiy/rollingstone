@@ -509,11 +509,11 @@ func TestSimulator_Step12_ProcessCompactionCheck_SchedulesNextCheck(t *testing.T
 	require.Equal(t, 2.0, nextEvent.Timestamp(), "Next compaction check should be scheduled 1 second later (1.0 + 1.0 = 2.0)")
 }
 
-// STEP 13: Test that tryScheduleCompaction schedules compaction start time after disk becomes free
-// Given: Disk busy until time T, compaction scheduled
+// STEP 13: Test that tryScheduleCompaction reserves disk bandwidth
+// Given: Disk has available bandwidth, compaction scheduled
 // When: tryScheduleCompaction is called
-// Then: Compaction should start at max(virtualTime, diskBusyUntil)
-func TestSimulator_Step13_TryScheduleCompaction_RespectsDiskBusyUntil(t *testing.T) {
+// Then: Compaction should reserve bandwidth from the token bucket
+func TestSimulator_Step13_TryScheduleCompaction_ReservesBandwidth(t *testing.T) {
 	config := DefaultConfig()
 	config.CompactionStyle = CompactionStyleUniversal
 	config.L0CompactionTrigger = 2
@@ -524,7 +524,6 @@ func TestSimulator_Step13_TryScheduleCompaction_RespectsDiskBusyUntil(t *testing
 	sim, err := NewSimulator(config)
 	require.NoError(t, err)
 	sim.virtualTime = 1.0
-	sim.diskBusyUntil = 5.0 // Disk busy until t=5.0
 
 	// Add files to L0
 	for i := 0; i < 3; i++ {
@@ -535,17 +534,15 @@ func TestSimulator_Step13_TryScheduleCompaction_RespectsDiskBusyUntil(t *testing
 		})
 	}
 
-	initialDiskBusyUntil := sim.diskBusyUntil
-	require.Equal(t, 5.0, initialDiskBusyUntil, "Disk should be busy until t=5.0")
+	initialAvailableBandwidth := sim.disk.AvailableBandwidthMBps
+	require.Equal(t, float64(config.IOThroughputMBps), initialAvailableBandwidth, "Disk should have full bandwidth available")
 
 	// Schedule compaction
 	scheduled := sim.tryScheduleCompaction()
 	require.True(t, scheduled, "Should schedule compaction")
 
-	// Verify diskBusyUntil was updated (compaction scheduled after disk becomes free)
-	require.Greater(t, sim.diskBusyUntil, initialDiskBusyUntil, "Disk busy until should be updated (compaction scheduled)")
-	require.GreaterOrEqual(t, sim.diskBusyUntil, sim.virtualTime, "Compaction start time should be >= virtual time")
-	require.GreaterOrEqual(t, sim.diskBusyUntil, initialDiskBusyUntil, "Compaction start time should be >= diskBusyUntil")
+	// Verify bandwidth was reserved
+	require.Less(t, sim.disk.AvailableBandwidthMBps, initialAvailableBandwidth, "Available bandwidth should be reduced after scheduling compaction")
 }
 
 // STEP 14: Test that processScheduleWrite schedules WriteEvent at current time
@@ -1164,14 +1161,12 @@ func TestSimulator_Step32_VirtualTimeNeverGoesBackwards_StalledWriteReschedule(t
 	require.NoError(t, err)
 	sim.virtualTime = 100.0 // Advance time far into the future
 
-	// Setup: Stall active, but diskBusyUntil is in the PAST (disk already free)
+	// Setup: Stall active
 	sim.numImmutableMemtables = 2 // Max, causing stall
 	sim.stallStartTime = 50.0
-	sim.diskBusyUntil = 50.0        // Disk was busy until t=50, but now we're at t=100 (disk is free)
 	sim.nextFlushCompletionTime = 0 // No flush scheduled
 
 	require.Equal(t, 100.0, sim.virtualTime, "Should start at t=100.0")
-	require.Less(t, sim.diskBusyUntil, sim.virtualTime, "diskBusyUntil (50.0) < virtualTime (100.0) - disk is already free")
 
 	// Create write event that will be stalled
 	event := NewWriteEvent(100.0, 1.0)
@@ -1226,7 +1221,6 @@ func TestSimulator_Step33_VirtualTimeNeverGoesBackwards_StaleNextFlushTime(t *te
 	// Setup: Stall active, but nextFlushCompletionTime is STALE (was set earlier, now in past)
 	sim.numImmutableMemtables = 2 // Max, causing stall
 	sim.stallStartTime = 50.0
-	sim.diskBusyUntil = 50.0           // Disk already free
 	sim.nextFlushCompletionTime = 60.0 // Was set earlier, but now virtualTime=100 (stale!)
 
 	require.Equal(t, 100.0, sim.virtualTime, "Should start at t=100.0")

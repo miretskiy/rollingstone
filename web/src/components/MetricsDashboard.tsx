@@ -128,7 +128,7 @@ export function MetricsDashboard() {
                         {compactionRate.toFixed(1)}
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                        {compactionRate > 0 ? `comp/sec (${activeCompactionCount} active)` : 'Idle'}
+                        {compactionRate > 0 ? 'comp/sec' : 'Idle'}
                     </div>
                 </div>
 

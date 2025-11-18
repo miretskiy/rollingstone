@@ -567,11 +567,8 @@ func percentile(sortedValues []float64, p float64) float64 {
 // Shows what's actively being written RIGHT NOW, not historical average
 // FIX: Accounts for serialized compaction execution (diskBusyUntil serializes all disk operations)
 func (m *Metrics) calculateThroughput() {
-	// Use a narrow window around current time to capture "instantaneous" throughput
-	// Window: [now - 0.05s, now + 0.05s] = 100ms total
-	instantWindow := 0.05
-	windowStart := m.Timestamp - instantWindow
-	windowEnd := m.Timestamp + instantWindow
+	// Calculate instantaneous throughput at exact current timestamp
+	// Only count writes that are active RIGHT NOW (StartTime <= now <= EndTime)
 
 	// Clean up old completed writes (keep only recent history)
 	validWrites := make([]WriteActivity, 0)
@@ -619,9 +616,9 @@ func (m *Metrics) calculateThroughput() {
 
 	// Process all writes, but only count active compactions
 	for _, w := range allWrites {
-		// Check if this write is active during the instantaneous window
-		if w.EndTime < windowStart || w.StartTime > windowEnd {
-			continue // Not active during this instant
+		// Check if this write is active RIGHT NOW (not in a window, but at exact timestamp)
+		if w.StartTime > m.Timestamp || w.EndTime < m.Timestamp {
+			continue // Not active at this exact moment
 		}
 
 		// Calculate write bandwidth (MB/s)

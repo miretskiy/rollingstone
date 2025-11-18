@@ -33,7 +33,7 @@ func TestUniversalCompactionL2BaseLevelRegression(t *testing.T) {
 		baseLevel     int
 		l2FileCount   int
 		l2SizeMB      float64
-		compactions   []int // Active compaction levels
+		compactions   int // Active compaction count
 		hasProgressed bool  // True if base level moved or L2 changed
 	}
 
@@ -97,7 +97,7 @@ func TestUniversalCompactionL2BaseLevelRegression(t *testing.T) {
 				t.Logf("  Virtual time: %.1f", stepState.virtualTime)
 				t.Logf("  Base level: L%d", baseLevel)
 				t.Logf("  L2: %d files, %.1f MB", l2FileCount, l2SizeMB)
-				t.Logf("  Active compactions: %d (levels: %v)", len(stepState.compactions), stepState.compactions)
+				t.Logf("  Active compactions: %d", stepState.compactions)
 				// Also log detailed compaction info from state
 				if compInfos, ok := state["activeCompactionInfos"].([]*ActiveCompactionInfo); ok {
 					for _, comp := range compInfos {
@@ -384,7 +384,7 @@ func TestUniversalCompactionMultiLevelFileRemoval(t *testing.T) {
 
 		// Check for active compaction
 		activeCompactions := sim.ActiveCompactions()
-		if len(activeCompactions) > 0 && hasL0Files && hasIntermediateFiles {
+		if activeCompactions > 0 && hasL0Files && hasIntermediateFiles {
 			// We have a compaction running with files in multiple levels
 			// Wait for it to complete
 			t.Logf("Step %d: Found potential multi-level compaction scenario", step)
@@ -394,7 +394,7 @@ func TestUniversalCompactionMultiLevelFileRemoval(t *testing.T) {
 			// Step forward to let compaction complete
 			for i := 0; i < 50; i++ {
 				sim.Step()
-				if len(sim.ActiveCompactions()) == 0 {
+				if sim.ActiveCompactions() == 0 {
 					break
 				}
 			}

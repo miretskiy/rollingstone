@@ -89,7 +89,7 @@ func TestSimulator_Step1_UniversalCompaction_LevelToCompactNegative_Bug(t *testi
 	// ACTUAL: Returns false (BUG - levelToCompact = -1 causes early return)
 	require.True(t, scheduled, "BUG EXPOSED: Should schedule compaction when levelToCompact = -1 for universal compaction")
 	active := sim.ActiveCompactions()
-	require.Greater(t, len(active), 0, "Should have active compaction scheduled")
+	require.Greater(t, active, 0, "Should have active compaction scheduled")
 	require.Greater(t, len(sim.pendingCompactions), 0, "Should have pending compaction job")
 }
 
@@ -154,12 +154,12 @@ func TestSimulator_Step3_MaxBackgroundJobsOneSlot(t *testing.T) {
 	// First compaction should succeed
 	scheduled1 := sim.tryScheduleCompaction()
 	require.True(t, scheduled1, "First compaction should schedule")
-	require.Equal(t, 1, len(sim.ActiveCompactions()), "Should have 1 active compaction")
+	require.Equal(t, 1, sim.ActiveCompactions(), "Should have 1 active compaction")
 
 	// Second compaction should fail (no slots)
 	scheduled2 := sim.tryScheduleCompaction()
 	require.False(t, scheduled2, "Second compaction should not schedule (MaxBackgroundJobs = 1)")
-	require.Equal(t, 1, len(sim.ActiveCompactions()), "Should still have only 1 active compaction")
+	require.Equal(t, 1, sim.ActiveCompactions(), "Should still have only 1 active compaction")
 }
 
 // STEP 4: Test that pendingCompactions stores job correctly
@@ -258,14 +258,7 @@ func TestSimulator_Step5_ProcessCompactionExecutesJob(t *testing.T) {
 
 	// Verify activeCompactions was cleared
 	active := sim.ActiveCompactions()
-	hasL0 := false
-	for _, level := range active {
-		if level == 0 {
-			hasL0 = true
-			break
-		}
-	}
-	require.False(t, hasL0, "Active compaction should be cleared after processing")
+	require.Equal(t, 0, active, "Active compaction should be cleared after processing")
 
 	// Verify compaction was executed (files moved from L0)
 	finalL0Count := sim.lsm.Levels[0].FileCount
@@ -474,7 +467,7 @@ func TestSimulator_Step11_ProcessCompactionCheck_SchedulesCompaction(t *testing.
 		})
 	}
 
-	require.Equal(t, 0, len(sim.ActiveCompactions()), "Should have no active compactions initially")
+	require.Equal(t, 0, sim.ActiveCompactions(), "Should have no active compactions initially")
 
 	// Create compaction check event
 	event := NewCompactionCheckEvent(1.0)
@@ -483,7 +476,7 @@ func TestSimulator_Step11_ProcessCompactionCheck_SchedulesCompaction(t *testing.
 	sim.processCompactionCheck(event)
 
 	// Verify 1 compaction was scheduled
-	require.Equal(t, 1, len(sim.ActiveCompactions()), "Should have exactly 1 active compaction (MaxBackgroundJobs = 1)")
+	require.Equal(t, 1, sim.ActiveCompactions(), "Should have exactly 1 active compaction (MaxBackgroundJobs = 1)")
 	require.Equal(t, 1, len(sim.pendingCompactions), "Should have 1 pending compaction job")
 }
 
@@ -951,7 +944,7 @@ func TestSimulator_Step25_Integration_CompactionCompletes_FreesSlot(t *testing.T
 	// Schedule first compaction
 	scheduled1 := sim.tryScheduleCompaction()
 	require.True(t, scheduled1, "First compaction should schedule")
-	require.Equal(t, 1, len(sim.ActiveCompactions()), "Should have 1 active compaction")
+	require.Equal(t, 1, sim.ActiveCompactions(), "Should have 1 active compaction")
 
 	// Second compaction should fail (no slots)
 	scheduled2 := sim.tryScheduleCompaction()
@@ -972,7 +965,7 @@ func TestSimulator_Step25_Integration_CompactionCompletes_FreesSlot(t *testing.T
 	sim.processCompaction(compactionEvent)
 
 	// Verify slot freed
-	require.Equal(t, 0, len(sim.ActiveCompactions()), "Should have no active compactions (slot freed)")
+	require.Equal(t, 0, sim.ActiveCompactions(), "Should have no active compactions (slot freed)")
 
 	// Add more files to trigger another compaction (need >= trigger = 2)
 	for i := 0; i < 2; i++ {
@@ -986,7 +979,7 @@ func TestSimulator_Step25_Integration_CompactionCompletes_FreesSlot(t *testing.T
 	// Should be able to schedule compaction now (slot freed, L0 has >= trigger files)
 	scheduled3 := sim.tryScheduleCompaction()
 	require.True(t, scheduled3, "Should be able to schedule compaction after slot freed and L0 has >= trigger files")
-	require.Equal(t, 1, len(sim.ActiveCompactions()), "Should have 1 active compaction again")
+	require.Equal(t, 1, sim.ActiveCompactions(), "Should have 1 active compaction again")
 }
 
 // STEP 26: Test that Step() processes 1 second when SimulationSpeedMultiplier = 1

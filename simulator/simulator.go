@@ -1546,4 +1546,35 @@ func (s *Simulator) logEvent(format string, args ...interface{}) {
 	}
 }
 
+// IsWriteStalled returns true if writes are currently stalled due to memtable backpressure
+func (s *Simulator) IsWriteStalled() bool {
+	return s.stallStartTime > 0
+}
+
+// ScheduleWrite schedules a write event at the specified virtual time
+func (s *Simulator) ScheduleWrite(sizeMB float64, timestamp float64) {
+	writeEvent := &WriteEvent{
+		timestamp: timestamp,
+		sizeMB:    sizeMB,
+	}
+	s.queue.Push(writeEvent)
+}
+
+// StepUntil advances the simulation until the specified target virtual time is reached
+func (s *Simulator) StepUntil(targetTime float64) float64 {
+	for s.virtualTime < targetTime && !s.queue.IsEmpty() {
+		if s.metrics.IsOOMKilled {
+			break
+		}
+		s.Step()
+	}
+	return s.virtualTime
+}
+
+// StepByDelta advances the simulation by the specified time delta (in seconds)
+func (s *Simulator) StepByDelta(deltaSeconds float64) float64 {
+	targetTime := s.virtualTime + deltaSeconds
+	return s.StepUntil(targetTime)
+}
+
 // Helper functions

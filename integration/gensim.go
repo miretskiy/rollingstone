@@ -137,7 +137,11 @@ func NewRocksDBModel(component string, cfg *RocksDBConfig) (*RocksDBModel, error
 		WriteRateMBps:                    0, // We'll control writes through HandleRequest
 		MaxWriteBufferNumber:             2,
 		TargetFileSizeMultiplier:         1,
-		CompactionReductionFactor:        0.9,
+		DeduplicationFactor:              0.9,  // 10% logical reduction (tombstones, overwrites)
+		CompressionFactor:                0.85, // 15% physical reduction with 4KB blocks
+		CompressionThroughputMBps:        750,  // LZ4 compression speed
+		DecompressionThroughputMBps:      3700, // LZ4 decompression speed
+		BlockSizeKB:                      4,    // 4 KB block size (RocksDB default)
 		MaxSubcompactions:                1,
 		MaxCompactionBytesMB:             0,
 		LevelCompactionDynamicLevelBytes: false,
@@ -479,7 +483,7 @@ func (r *RocksDBModel) buildMetrics(afterMetrics, beforeMetrics *simulator.Metri
 	// 1. L0 file count exceeds trigger AND we're not at max background jobs
 	// 2. System is stalled (indicates compaction backlog)
 	if l0Count, ok := perLevelFileCounts[0]; ok {
-		if l0Count >= r.cfg.L0CompactionTrigger && len(activeCompactions) < r.cfg.MaxBackgroundJobs {
+		if l0Count >= r.cfg.L0CompactionTrigger && activeCompactions < r.cfg.MaxBackgroundJobs {
 			compactionPending = 1
 		}
 	}
@@ -582,7 +586,7 @@ func (r *RocksDBModel) buildMetrics(afterMetrics, beforeMetrics *simulator.Metri
 		{
 			Name:  "rocksdb.active_compactions",
 			Type:  "gauge",
-			Value: float64(len(activeCompactions)),
+			Value: float64(activeCompactions),
 			Tags:  tags,
 		},
 		{

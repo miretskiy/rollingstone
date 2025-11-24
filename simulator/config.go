@@ -13,6 +13,7 @@ type CompactionStyle int
 const (
 	CompactionStyleLeveled   CompactionStyle = iota // Leveled compaction (classic RocksDB style)
 	CompactionStyleUniversal                        // Universal compaction (space-efficient, lower write amp)
+	CompactionStyleFIFO                             // FIFO compaction (time-series optimized, delete old data)
 )
 
 // TrafficModel represents the traffic distribution model
@@ -143,6 +144,8 @@ func (cs CompactionStyle) String() string {
 		return "leveled"
 	case CompactionStyleUniversal:
 		return "universal"
+	case CompactionStyleFIFO:
+		return "fifo"
 	default:
 		return "unknown"
 	}
@@ -155,8 +158,10 @@ func ParseCompactionStyle(s string) (CompactionStyle, error) {
 		return CompactionStyleLeveled, nil
 	case "universal":
 		return CompactionStyleUniversal, nil
+	case "fifo":
+		return CompactionStyleFIFO, nil
 	default:
-		return CompactionStyleUniversal, fmt.Errorf("invalid compaction style: %s (must be 'leveled' or 'universal')", s)
+		return CompactionStyleUniversal, fmt.Errorf("invalid compaction style: %s (must be 'leveled', 'universal', or 'fifo')", s)
 	}
 }
 
@@ -219,6 +224,11 @@ type SimConfig struct {
 	// Universal Compaction Options
 	MaxSizeAmplificationPercent int `json:"maxSizeAmplificationPercent"` // max_size_amplification_percent (default 200%, RocksDB allows 0 to UINT_MAX) - max allowed space amplification before compaction triggers. 0 = trigger on any amplification, very high values (e.g., 9000) allow extreme amplification before triggering
 
+	// FIFO Compaction Options
+	// RocksDB Reference: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_fifo.cc
+	FIFOMaxTableFilesSizeMB int  `json:"fifoMaxTableFilesSizeMB"` // max_table_files_size (default 1024 MB = 1 GB) - total size threshold for deletion
+	FIFOAllowCompaction     bool `json:"fifoAllowCompaction"`     // allow_compaction (default false) - enable intra-L0 compaction to merge small files
+
 	// Simulation Control
 	InitialLSMSizeMB          int   `json:"initialLSMSizeMB"`          // Pre-populate LSM with this much data (0 = start empty, useful for skipping warmup)
 	SimulationSpeedMultiplier int   `json:"simulationSpeedMultiplier"` // Process N events per step (1 = real-time feel, 10 = 10x faster)
@@ -266,6 +276,8 @@ func DefaultConfig() SimConfig {
 		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
 		CompactionStyle:                  CompactionStyleUniversal, // Universal compaction (default as per user request)
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
+		FIFOMaxTableFilesSizeMB: 1024,  // 1024 MB = 1 GB (RocksDB default)
+		FIFOAllowCompaction:     false, // false = no intra-L0 compaction (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step (real-time feel)
 		RandomSeed:                       0,                        // 0 = use time-based seed

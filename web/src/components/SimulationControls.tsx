@@ -80,6 +80,7 @@ export function SimulationControls() {
   const bufferCapacityMB = useStore(state => state.config.maxStalledWriteMemoryMB) || 4096;
   const compactionStyle = useStore(state => state.config.compactionStyle) || 'universal';
   const levelCompactionDynamicLevelBytes = useStore(state => state.config.levelCompactionDynamicLevelBytes) || false;
+  const fifoAllowCompaction = useStore(state => state.config.fifoAllowCompaction) || false;
   const overlapDistTypeRaw = useStore(state => state.config.overlapDistribution?.type);
   const overlapDistType = (overlapDistTypeRaw === 'uniform' || overlapDistTypeRaw === 'exponential' || overlapDistTypeRaw === 'geometric' || overlapDistTypeRaw === 'fixed') 
     ? overlapDistTypeRaw 
@@ -335,6 +336,20 @@ export function SimulationControls() {
                   >
                     Universal
                   </button>
+                  <button
+                    onClick={() => {
+                      if (!isConnected || isRunning) return;
+                      updateConfig({ compactionStyle: 'fifo' });
+                    }}
+                    disabled={!isConnected || isRunning}
+                    className={`flex-1 px-3 py-2 text-sm border rounded transition-colors ${
+                      compactionStyle === 'fifo'
+                        ? 'bg-primary-500 border-primary-400 text-white font-semibold'
+                        : 'bg-dark-bg hover:bg-gray-700 border-dark-border'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    FIFO
+                  </button>
                 </div>
               </div>
               
@@ -345,12 +360,20 @@ export function SimulationControls() {
                   tooltip="Max number of memtables before write stall" />
                 <ConfigInput label="L0 Compaction Trigger" field="l0CompactionTrigger" min={2} max={20} unit="files"
                   tooltip="Number of L0 files that trigger compaction" />
-                <ConfigInput label="Level Size Multiplier" field="levelMultiplier" min={2} max={100}
-                  tooltip="Size multiplier between levels (default: 10)" />
-                <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
-                  tooltip="Max concurrent compaction jobs" />
-                <ConfigInput label="Number of Levels" field="numLevels" min={2} max={10}
-                  tooltip="Total number of LSM levels (including L0)" />
+                {compactionStyle !== 'fifo' && (
+                  <>
+                    <ConfigInput label="Level Size Multiplier" field="levelMultiplier" min={2} max={100}
+                      tooltip="Size multiplier between levels (default: 10)" />
+                    <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
+                      tooltip="Max concurrent compaction jobs" />
+                    <ConfigInput label="Number of Levels" field="numLevels" min={2} max={10}
+                      tooltip="Total number of LSM levels (including L0)" />
+                  </>
+                )}
+                {compactionStyle === 'fifo' && (
+                  <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
+                    tooltip="Max concurrent compaction jobs" />
+                )}
               </div>
 
               {/* Advanced LSM Tuning (nested) */}
@@ -367,16 +390,22 @@ export function SimulationControls() {
                 {expandedSections.lsmAdvanced && (
                   <div className="p-2 bg-dark-card">
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                      <ConfigInput label="Max Bytes for Level Base" field="maxBytesForLevelBaseMB" min={64} max={2048} unit="MB"
-                        tooltip="Target size for L1 (RocksDB: max_bytes_for_level_base)" />
-                      <ConfigInput label="Target SST File Size" field="targetFileSizeMB" min={1} max={512} unit="MB"
-                        tooltip="Target size for individual SST files (RocksDB: target_file_size_base)" />
-                      <ConfigInput label="File Size Multiplier" field="targetFileSizeMultiplier" min={1} max={10}
-                        tooltip="SST file size multiplier per level (RocksDB: target_file_size_multiplier)" />
+                      {compactionStyle !== 'fifo' && (
+                        <>
+                          <ConfigInput label="Max Bytes for Level Base" field="maxBytesForLevelBaseMB" min={64} max={2048} unit="MB"
+                            tooltip="Target size for L1 (RocksDB: max_bytes_for_level_base)" />
+                          <ConfigInput label="Target SST File Size" field="targetFileSizeMB" min={1} max={512} unit="MB"
+                            tooltip="Target size for individual SST files (RocksDB: target_file_size_base)" />
+                          <ConfigInput label="File Size Multiplier" field="targetFileSizeMultiplier" min={1} max={10}
+                            tooltip="SST file size multiplier per level (RocksDB: target_file_size_multiplier)" />
+                        </>
+                      )}
                       <ConfigInput label="Max Compaction Bytes" field="maxCompactionBytesMB" min={100} max={10000} unit="MB"
                         tooltip="Max total input size for single compaction (RocksDB: max_compaction_bytes)" />
-                      <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
-                        tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions). Default: 1 (disabled). Splits large compactions into multiple parallel subcompactions, reducing compaction duration. Applies to L0→L1 compactions for leveled style, and L0→L1+ compactions for universal style. Higher values (e.g., 4-8) can significantly speed up large L0 compactions." />
+                      {compactionStyle !== 'fifo' && (
+                        <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
+                          tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions). Default: 1 (disabled). Splits large compactions into multiple parallel subcompactions, reducing compaction duration. Applies to L0→L1 compactions for leveled style, and L0→L1+ compactions for universal style. Higher values (e.g., 4-8) can significantly speed up large L0 compactions." />
+                      )}
                       {compactionStyle === 'universal' && (
                         <ConfigInput 
                           label="Max Size Amplification" 
@@ -409,6 +438,39 @@ export function SimulationControls() {
                             </div>
                           </label>
                         </div>
+                      )}
+                      {compactionStyle === 'fifo' && (
+                        <>
+                          <ConfigInput
+                            label="Max Table Files Size"
+                            field="fifoMaxTableFilesSizeMB"
+                            min={100}
+                            max={500000}
+                            unit="MB"
+                            tooltip="Total size threshold for FIFO deletion (RocksDB: max_table_files_size). Default: 1024 MB (1 GB). When total LSM size exceeds this, oldest files are deleted." />
+                          <div className="flex items-center gap-2 col-span-1">
+                            <input
+                              type="checkbox"
+                              id="fifoAllowCompaction"
+                              checked={fifoAllowCompaction}
+                              onChange={(e) => {
+                                if (!isConnected || isRunning) return;
+                                updateConfig({ fifoAllowCompaction: e.target.checked });
+                              }}
+                              disabled={!isConnected || isRunning}
+                              className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-primary-500 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <label htmlFor="fifoAllowCompaction" className="text-sm text-gray-300 flex items-center gap-1 cursor-pointer">
+                              Allow Compaction
+                              <div className="group relative">
+                                <HelpCircle className="w-3 h-3 text-gray-500 cursor-help" tabIndex={-1} />
+                                <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-80 p-2 bg-gray-900 border border-gray-700 rounded text-xs text-gray-300 shadow-lg">
+                                  Enable intra-L0 compaction to merge small files (RocksDB: allow_compaction). Default: false. When enabled, FIFO can compact multiple small L0 files together to reduce file count while staying under size limits.
+                                </div>
+                              </div>
+                            </label>
+                          </div>
+                        </>
                       )}
                     </div>
                   </div>
@@ -511,16 +573,16 @@ export function SimulationControls() {
                               model: 'advanced',
                               baseRateMBps: writeRate,
                               burstMultiplier: clampedVal,
-                              lognormalSigma: trafficDist?.lognormalSigma || 0.1,
-                              onMeanSeconds: trafficDist?.onMeanSeconds || 5.0,
-                              offMeanSeconds: trafficDist?.offMeanSeconds || 10.0,
-                              erlangK: trafficDist?.erlangK || 2,
-                              spikeRatePerSec: trafficDist?.spikeRatePerSec || 0.1,
-                              spikeMeanDur: trafficDist?.spikeMeanDur || 1.0,
-                              spikeAmplitudeMean: trafficDist?.spikeAmplitudeMean || 1.0,
-                              spikeAmplitudeSigma: trafficDist?.spikeAmplitudeSigma || 0.5,
-                              capacityLimitMB: trafficDist?.capacityLimitMB || 0,
-                              queueMode: trafficDist?.queueMode || 'drop',
+                              lognormalSigma: trafficDist?.lognormalSigma ?? 0.1,
+                              onMeanSeconds: trafficDist?.onMeanSeconds ?? 5.0,
+                              offMeanSeconds: trafficDist?.offMeanSeconds ?? 10.0,
+                              erlangK: trafficDist?.erlangK ?? 2,
+                              spikeRatePerSec: trafficDist?.spikeRatePerSec ?? 0.1,
+                              spikeMeanDur: trafficDist?.spikeMeanDur ?? 1.0,
+                              spikeAmplitudeMean: trafficDist?.spikeAmplitudeMean ?? 1.0,
+                              spikeAmplitudeSigma: trafficDist?.spikeAmplitudeSigma ?? 0.5,
+                              capacityLimitMB: trafficDist?.capacityLimitMB ?? 0,
+                              queueMode: trafficDist?.queueMode ?? 'drop',
                             }
                           });
                         }
@@ -1199,14 +1261,14 @@ export function SimulationControls() {
                               enabled: true,
                               requestsPerSec: reqsPerSec,
                               requestRateVariability: readWorkload?.requestRateVariability ?? 0.0,
-                              cacheHitRate: readWorkload?.cacheHitRate || 0.90,
-                              bloomNegativeRate: readWorkload?.bloomNegativeRate || 0.02,
-                              scanRate: readWorkload?.scanRate || 0.05,
-                              cacheHitLatency: readWorkload?.cacheHitLatency || { distribution: 'fixed', mean: 0.001 },
-                              bloomNegativeLatency: readWorkload?.bloomNegativeLatency || { distribution: 'fixed', mean: 0.01 },
-                              pointLookupLatency: readWorkload?.pointLookupLatency || { distribution: 'exponential', mean: 2.0 },
-                              scanLatency: readWorkload?.scanLatency || { distribution: 'lognormal', mean: 10.0 },
-                              avgScanSizeKB: readWorkload?.avgScanSizeKB || 16.0,
+                              cacheHitRate: readWorkload?.cacheHitRate ?? 0.90,
+                              bloomNegativeRate: readWorkload?.bloomNegativeRate ?? 0.02,
+                              scanRate: readWorkload?.scanRate ?? 0.05,
+                              cacheHitLatency: readWorkload?.cacheHitLatency ?? { distribution: 'fixed', mean: 0.001 },
+                              bloomNegativeLatency: readWorkload?.bloomNegativeLatency ?? { distribution: 'fixed', mean: 0.01 },
+                              pointLookupLatency: readWorkload?.pointLookupLatency ?? { distribution: 'exponential', mean: 2.0 },
+                              scanLatency: readWorkload?.scanLatency ?? { distribution: 'lognormal', mean: 10.0 },
+                              avgScanSizeKB: readWorkload?.avgScanSizeKB ?? 16.0,
                             }
                           });
                         }
@@ -1243,16 +1305,16 @@ export function SimulationControls() {
                       updateConfig({
                         readWorkload: {
                           enabled: true,
-                          requestsPerSec: readWorkload?.requestsPerSec || 1000,
+                          requestsPerSec: readWorkload?.requestsPerSec ?? 1000,
                           requestRateVariability: variability,
-                          cacheHitRate: readWorkload?.cacheHitRate || 0.90,
-                          bloomNegativeRate: readWorkload?.bloomNegativeRate || 0.02,
-                          scanRate: readWorkload?.scanRate || 0.05,
-                          cacheHitLatency: readWorkload?.cacheHitLatency || { distribution: 'fixed', mean: 0.001 },
-                          bloomNegativeLatency: readWorkload?.bloomNegativeLatency || { distribution: 'fixed', mean: 0.01 },
-                          pointLookupLatency: readWorkload?.pointLookupLatency || { distribution: 'exponential', mean: 2.0 },
-                          scanLatency: readWorkload?.scanLatency || { distribution: 'lognormal', mean: 10.0 },
-                          avgScanSizeKB: readWorkload?.avgScanSizeKB || 16.0,
+                          cacheHitRate: readWorkload?.cacheHitRate ?? 0.90,
+                          bloomNegativeRate: readWorkload?.bloomNegativeRate ?? 0.02,
+                          scanRate: readWorkload?.scanRate ?? 0.05,
+                          cacheHitLatency: readWorkload?.cacheHitLatency ?? { distribution: 'fixed', mean: 0.001 },
+                          bloomNegativeLatency: readWorkload?.bloomNegativeLatency ?? { distribution: 'fixed', mean: 0.01 },
+                          pointLookupLatency: readWorkload?.pointLookupLatency ?? { distribution: 'exponential', mean: 2.0 },
+                          scanLatency: readWorkload?.scanLatency ?? { distribution: 'lognormal', mean: 10.0 },
+                          avgScanSizeKB: readWorkload?.avgScanSizeKB ?? 16.0,
                         }
                       });
                     }}
@@ -1361,7 +1423,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.cacheHitRate || 0.90}
+                            value={readWorkload?.cacheHitRate ?? 0.90}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({ cacheHitRate: Math.max(0, Math.min(1.0, val)) })
@@ -1386,7 +1448,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.bloomNegativeRate || 0.02}
+                            value={readWorkload?.bloomNegativeRate ?? 0.02}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({ bloomNegativeRate: Math.max(0, Math.min(1.0, val)) })
@@ -1411,7 +1473,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.scanRate || 0.05}
+                            value={readWorkload?.scanRate ?? 0.05}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({ scanRate: Math.max(0, Math.min(1.0, val)) })
@@ -1437,11 +1499,11 @@ export function SimulationControls() {
                           </label>
                           <div className="w-20 px-2 py-1 bg-gray-800 border border-dark-border rounded text-right text-xs text-gray-400">
                             {(() => {
-                              const cacheHitRate = readWorkload?.cacheHitRate || 0.90;
-                              const bloomNegativeRate = readWorkload?.bloomNegativeRate || 0.02;
-                              const scanRate = readWorkload?.scanRate || 0.05;
+                              const cacheHitRate = readWorkload?.cacheHitRate ?? 0.90;
+                              const bloomNegativeRate = readWorkload?.bloomNegativeRate ?? 0.02;
+                              const scanRate = readWorkload?.scanRate ?? 0.05;
                               const pointLookupRate = Math.max(0, 1.0 - cacheHitRate - bloomNegativeRate - scanRate);
-                              return pointLookupRate.toFixed(2);
+                              return pointLookupRate.toFixed(4);
                             })()}
                           </div>
                         </div>
@@ -1458,7 +1520,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.avgScanSizeKB || 16.0}
+                            value={readWorkload?.avgScanSizeKB ?? 16.0}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({ avgScanSizeKB: Math.max(1, val) })
@@ -1487,7 +1549,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.cacheHitLatency?.mean || 0.001}
+                            value={readWorkload?.cacheHitLatency?.mean ?? 0.001}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({
@@ -1514,7 +1576,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.bloomNegativeLatency?.mean || 0.01}
+                            value={readWorkload?.bloomNegativeLatency?.mean ?? 0.01}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({
@@ -1541,7 +1603,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.pointLookupLatency?.mean || 2.0}
+                            value={readWorkload?.pointLookupLatency?.mean ?? 2.0}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({
@@ -1568,7 +1630,7 @@ export function SimulationControls() {
                             </div>
                           </label>
                           <NumberInput
-                            value={readWorkload?.scanLatency?.mean || 10.0}
+                            value={readWorkload?.scanLatency?.mean ?? 10.0}
                             onChange={(val) => {
                               updateConfig({
                                 readWorkload: getCompleteReadWorkload({

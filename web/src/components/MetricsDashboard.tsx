@@ -469,11 +469,23 @@ export function MetricsDashboard() {
 
                     {/* Per-Level Compaction Throughput */}
                     {config && currentMetrics?.perLevelThroughputMBps &&
-                        Array.from({ length: config.numLevels - 1 }, (_, idx) => {
+                        Array.from({ length: config.compactionStyle === 'fifo' ? 1 : config.numLevels - 1 }, (_, idx) => {
                             const throughput = currentMetrics.perLevelThroughputMBps[idx] || 0;
                             const levelColors = ['text-amber-400', 'text-red-400', 'text-pink-400', 'text-purple-400', 'text-indigo-400', 'text-blue-400', 'text-cyan-400'];
                             const colorClass = levelColors[idx % levelColors.length];
-                            
+
+                            // For FIFO, show intra-L0 compaction
+                            if (config.compactionStyle === 'fifo') {
+                                return (
+                                    <div key={`level${idx}`} className="bg-dark-bg/50 rounded-lg p-3 border border-gray-700">
+                                        <div className="text-xs text-gray-400 mb-1">L0 Intra-L0</div>
+                                        <div className={`text-2xl font-bold ${colorClass}`}>
+                                            {throughput.toFixed(1)}
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             // For universal compaction, try to determine actual target level from inProgressDetails
                             let targetLevelLabel = idx + 1;
                             if (config.compactionStyle === 'universal' && currentMetrics.inProgressDetails) {

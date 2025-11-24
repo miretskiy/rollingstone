@@ -38,9 +38,22 @@ func NewLevel(number int) *Level {
 	}
 }
 
-// AddFile adds a file to the level
+// AddFile adds a file to the level.
+// For FIFO compaction (L0 only), files are prepended at index 0 (newest position).
+// For other compaction styles, files are appended at the end.
+//
+// FIDELITY: RocksDB L0 File Ordering
+// https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_picker_fifo.cc#L78
+// RocksDB's L0 is ordered: index 0 = NEWEST, index N-1 = OLDEST
+// This is evident from TTL deletion using reverse iterator (rbegin/rend)
 func (l *Level) AddFile(file *SSTFile) {
-	l.Files = append(l.Files, file)
+	if l.Number == 0 {
+		// L0: prepend at beginning (newest position)
+		l.Files = append([]*SSTFile{file}, l.Files...)
+	} else {
+		// L1+: append at end
+		l.Files = append(l.Files, file)
+	}
 	l.TotalSize += file.SizeMB
 	l.FileCount++
 }

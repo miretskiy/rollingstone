@@ -84,6 +84,8 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		compactor = NewLeveledCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
 	case CompactionStyleUniversal:
 		compactor = NewUniversalCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
+	case CompactionStyleFIFO:
+		compactor = NewFIFOCompactor(config.RandomSeed)
 	default:
 		// Default to universal compaction
 		compactor = NewUniversalCompactorWithOverlapDist(config.RandomSeed, config.OverlapDistribution)
@@ -448,11 +450,12 @@ func (s *Simulator) UpdateConfig(newConfig SimConfig) error {
 	originalTrafficModel := s.config.TrafficDistribution.Model
 	originalSpeedMultiplier := s.config.SimulationSpeedMultiplier
 
-	// Check if any static parameters changed (dynamic params: writeRateMBps, simulationSpeedMultiplier, trafficDistribution)
+	// Check if any static parameters changed (dynamic params: writeRateMBps, simulationSpeedMultiplier, trafficDistribution, readWorkload)
 	oldConfig := s.config
 	oldConfig.WriteRateMBps = newConfig.WriteRateMBps                         // Ignore dynamic params
 	oldConfig.SimulationSpeedMultiplier = newConfig.SimulationSpeedMultiplier // Ignore dynamic params
 	oldConfig.TrafficDistribution = newConfig.TrafficDistribution             // Ignore dynamic params
+	oldConfig.ReadWorkload = newConfig.ReadWorkload                           // Ignore dynamic params (read metrics only)
 	newConfigCopy := newConfig
 
 	needsReset := oldConfig != newConfigCopy
@@ -1130,6 +1133,10 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 	if inputSize == 0 {
 		return
 	}
+
+	// Update LSM total size (critical for FIFO compaction which manipulates files directly)
+	// For leveled/universal, this is redundant with lsm.CompactLevel(), but harmless
+	s.lsm.TotalSizeMB = s.lsm.TotalSizeMB - inputSize + outputSize
 
 	// Calculate compaction duration and throughput
 	compactionDuration := event.Timestamp() - compactionStartTime

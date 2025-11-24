@@ -53,3 +53,26 @@ next-env.d.ts
 *.log
 server.log
 server_debug.log
+
+# Simulation data (generated locally, keep for experiments)
+/configs/
+/simulation_runs/
+/inflight_trace_dump/
+/sim_runner
+
+# Benchmark results (generated locally)
+/benchmarks/bloom_results/
+/benchmarks/bloom_results_large/
+/benchmarks/partition_results/
+/benchmarks/production_results/
+/benchmarks/results/
+/benchmarks/results_small/
+/benchmarks/speedb_output/
+/benchmarks/*.log
+/benchmarks/*.txt
+/benchmarks/rewrite_db
+/benchmarks/*.o
+
+# Claude Code internal state
+/.claude/agents/
+/.claude/settings.local.json

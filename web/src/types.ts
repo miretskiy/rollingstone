@@ -82,9 +82,11 @@ export interface SimulationConfig {
     simulationSpeedMultiplier: number;
     randomSeed: number;
     maxStalledWriteMemoryMB?: number;
-    compactionStyle?: "leveled" | "universal"; // Compaction strategy (default "universal")
+    compactionStyle?: "leveled" | "universal" | "fifo"; // Compaction strategy (default "universal")
     maxSizeAmplificationPercent?: number; // max_size_amplification_percent for universal compaction (default 200%)
     levelCompactionDynamicLevelBytes?: boolean; // level_compaction_dynamic_level_bytes for leveled compaction (default false)
+    fifoMaxTableFilesSizeMB?: number; // max_table_files_size for FIFO compaction (default 1024 MB)
+    fifoAllowCompaction?: boolean; // allow_compaction for FIFO compaction (default false)
     enableWAL?: boolean; // Enable Write-Ahead Log (default true)
     walSync?: boolean; // Sync WAL after each write (default true)
     walSyncLatencyMs?: number; // fsync() latency in milliseconds (default 1.5ms)

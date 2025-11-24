@@ -11,6 +11,7 @@ interface LevelProps {
 
 function Level({ level, compactionInfos, compactionsSinceUpdate, baseLevel }: LevelProps) {
     const isCompacting = compactionInfos.length > 0;
+    const config = useStore(state => state.config);
     const formatSize = (mb: number) => {
         if (mb < 1024) return `${mb.toFixed(1)} MB`;
         if (mb < 1024 * 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -56,7 +57,10 @@ function Level({ level, compactionInfos, compactionsSinceUpdate, baseLevel }: Le
                     <div className="flex-1">
                         <div className="flex items-center gap-2">
                             <span className="text-lg font-bold">
-                                {level.level === 0 ? 'L0 (Tiered)' : `L${level.level} (Leveled)`}
+                                {config?.compactionStyle === 'fifo'
+                                    ? 'L0 (FIFO - Single Level)'
+                                    : level.level === 0 ? 'L0 (Tiered)' : `L${level.level} (Leveled)`
+                                }
                             </span>
                             {baseLevel !== undefined && level.level === baseLevel && (
                                 <span className="text-xs px-2 py-0.5 bg-purple-600/30 text-purple-300 border border-purple-500 rounded font-semibold" title="Base level: lowest non-empty level below L0. In universal compaction, files below base level are never compacted. In leveled compaction with dynamic level bytes, L0 compacts directly to base level, skipping empty intermediate levels.">
@@ -222,15 +226,24 @@ export function LSMTreeVisualization() {
 
             {/* Levels */}
             <div className="space-y-3">
-                {currentState.levels.map((level) => (
-                    <Level
-                        key={level.level}
-                        level={level}
-                        compactionInfos={compactionInfosByLevel.get(level.level) || []}
-                        compactionsSinceUpdate={currentMetrics?.compactionsSinceUpdate?.[level.level]}
-                        baseLevel={currentState.baseLevel}
-                    />
-                ))}
+                {currentState.levels
+                    .filter(level => {
+                        // For FIFO compaction, only show L0 (level 0)
+                        if (config?.compactionStyle === 'fifo') {
+                            return level.level === 0;
+                        }
+                        // For other compaction styles, show all levels
+                        return true;
+                    })
+                    .map((level) => (
+                        <Level
+                            key={level.level}
+                            level={level}
+                            compactionInfos={compactionInfosByLevel.get(level.level) || []}
+                            compactionsSinceUpdate={currentMetrics?.compactionsSinceUpdate?.[level.level]}
+                            baseLevel={currentState.baseLevel}
+                        />
+                    ))}
             </div>
         </div>
     );

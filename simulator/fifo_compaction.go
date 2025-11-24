@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 )
 
@@ -42,13 +43,13 @@ func NewFIFOCompactor(seed int64) *FIFOCompactor {
 //
 // C++ snippet from FIFOCompactionPicker::NeedsCompaction():
 //
-//   ```cpp
-//   bool FIFOCompactionPicker::NeedsCompaction(
-//       const VersionStorageInfo* vstorage) const {
-//     const int kLevel0 = 0;
-//     return vstorage->CompactionScore(kLevel0) >= 1;
-//   }
-//   ```
+//	```cpp
+//	bool FIFOCompactionPicker::NeedsCompaction(
+//	    const VersionStorageInfo* vstorage) const {
+//	  const int kLevel0 = 0;
+//	  return vstorage->CompactionScore(kLevel0) >= 1;
+//	}
+//	```
 //
 // FIDELITY: ✓ Exact match - Only check L0 compaction score
 // For FIFO, only L0 exists (num_levels=1), so we only check level 0
@@ -108,22 +109,22 @@ func (f *FIFOCompactor) NeedsCompaction(level int, lsm *LSMTree, config SimConfi
 //
 // C++ snippet from FIFOCompactionPicker::PickCompaction():
 //
-//   ```cpp
-//   Compaction* FIFOCompactionPicker::PickCompaction(...) {
-//     Compaction* c = nullptr;
-//     if (mutable_cf_options.ttl > 0) {
-//       c = PickTTLCompaction(...);
-//     }
-//     if (c == nullptr) {
-//       c = PickSizeCompaction(...);
-//     }
-//     if (c == nullptr) {
-//       c = PickTemperatureChangeCompaction(...);
-//     }
-//     RegisterCompaction(c);
-//     return c;
-//   }
-//   ```
+//	```cpp
+//	Compaction* FIFOCompactionPicker::PickCompaction(...) {
+//	  Compaction* c = nullptr;
+//	  if (mutable_cf_options.ttl > 0) {
+//	    c = PickTTLCompaction(...);
+//	  }
+//	  if (c == nullptr) {
+//	    c = PickSizeCompaction(...);
+//	  }
+//	  if (c == nullptr) {
+//	    c = PickTemperatureChangeCompaction(...);
+//	  }
+//	  RegisterCompaction(c);
+//	  return c;
+//	}
+//	```
 //
 // FIDELITY: ⚠️ SIMPLIFIED - TTL phase skipped (not implemented)
 // FIDELITY: ✓ Exact match - Size-based compaction phase matches RocksDB
@@ -176,17 +177,17 @@ func (f *FIFOCompactor) pickSizeCompaction(lsm *LSMTree, config SimConfig) *Comp
 //
 // C++ snippet from PickSizeCompaction() (L0 case):
 //
-//   ```cpp
-//   // In L0, right-most files are the oldest files.
-//   for (auto ritr = last_level_files.rbegin(); ritr != last_level_files.rend(); ++ritr) {
-//     auto f = *ritr;
-//     total_size -= f->fd.file_size;
-//     inputs[0].files.push_back(f);
-//     if (total_size <= mutable_cf_options.compaction_options_fifo.max_table_files_size) {
-//       break;  // Stop as soon as we're under threshold
-//     }
-//   }
-//   ```
+//	```cpp
+//	// In L0, right-most files are the oldest files.
+//	for (auto ritr = last_level_files.rbegin(); ritr != last_level_files.rend(); ++ritr) {
+//	  auto f = *ritr;
+//	  total_size -= f->fd.file_size;
+//	  inputs[0].files.push_back(f);
+//	  if (total_size <= mutable_cf_options.compaction_options_fifo.max_table_files_size) {
+//	    break;  // Stop as soon as we're under threshold
+//	  }
+//	}
+//	```
 //
 // FIDELITY: ✓ Exact match - Deletes oldest files one-by-one until size <= threshold
 // FIDELITY: ✓ Natural hysteresis - Stops immediately when under threshold (no explicit buffer)
@@ -241,18 +242,18 @@ func (f *FIFOCompactor) pickDeletionCompaction(lsm *LSMTree, config SimConfig) *
 //
 // C++ snippet from FindIntraL0Compaction():
 //
-//   ```cpp
-//   size_t start = 0;
-//   // ... start from level_files[0] (newest file)
-//   for (limit = start + 1; limit < level_files.size(); ++limit) {
-//     compact_bytes += static_cast<size_t>(level_files[limit]->fd.file_size);
-//     new_compact_bytes_per_del_file = compact_bytes / (limit - start);
-//     if (new_compact_bytes_per_del_file > compact_bytes_per_del_file ||
-//         compact_bytes > max_compaction_bytes) {
-//       break;
-//     }
-//   }
-//   ```
+//	```cpp
+//	size_t start = 0;
+//	// ... start from level_files[0] (newest file)
+//	for (limit = start + 1; limit < level_files.size(); ++limit) {
+//	  compact_bytes += static_cast<size_t>(level_files[limit]->fd.file_size);
+//	  new_compact_bytes_per_del_file = compact_bytes / (limit - start);
+//	  if (new_compact_bytes_per_del_file > compact_bytes_per_del_file ||
+//	      compact_bytes > max_compaction_bytes) {
+//	    break;
+//	  }
+//	}
+//	```
 //
 // FIDELITY: ✓ Exact match - Starts from index 0 (newest file) and pulls in adjacent files
 func (f *FIFOCompactor) pickIntraL0Compaction(lsm *LSMTree, config SimConfig) *CompactionJob {
@@ -380,17 +381,17 @@ func (f *FIFOCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree, conf
 //
 // C++ snippet from BackgroundCompaction():
 //
-//   ```cpp
-//   } else if (c->deletion_compaction()) {
-//     // deletion_compaction is special compaction that just deletes files
-//     // without reading or writing any data
-//     for (const auto& f : *c->inputs(0)) {
-//       c->edit()->DeleteFile(c->level(), f->fd.GetNumber());  // Metadata only
-//     }
-//     status = versions_->LogAndApply(...);  // Update MANIFEST
-//     ROCKS_LOG_BUFFER(log_buffer, "[%s] Deleted %d files\n", ...);
-//   }
-//   ```
+//	```cpp
+//	} else if (c->deletion_compaction()) {
+//	  // deletion_compaction is special compaction that just deletes files
+//	  // without reading or writing any data
+//	  for (const auto& f : *c->inputs(0)) {
+//	    c->edit()->DeleteFile(c->level(), f->fd.GetNumber());  // Metadata only
+//	  }
+//	  status = versions_->LogAndApply(...);  // Update MANIFEST
+//	  ROCKS_LOG_BUFFER(log_buffer, "[%s] Deleted %d files\n", ...);
+//	}
+//	```
 //
 // FIDELITY: ✓ Exact match - Pure metadata operation (no file I/O)
 // FIDELITY: ✓ No disk bandwidth used (files unlinked asynchronously by filesystem)
@@ -441,9 +442,11 @@ func (f *FIFOCompactor) executeDeletion(job *CompactionJob, lsm *LSMTree) {
 	fmt.Printf("[FIFO-DEL] SIZE CHANGE: expected=%.1f MB (deleted %.1f MB), actual=%.1f MB\n",
 		expectedSizeChange, deletedSize, actualSizeChange)
 
-	if actualSizeChange != expectedSizeChange {
-		panic(fmt.Sprintf("FIFO deletion size accounting ERROR: expected change %.1f MB but got %.1f MB",
-			expectedSizeChange, actualSizeChange))
+	// Use epsilon-based comparison for floating-point values to avoid precision errors
+	const epsilon = 0.0001 // Tolerance in MB (0.1 KB)
+	if math.Abs(actualSizeChange-expectedSizeChange) > epsilon {
+		panic(fmt.Sprintf("FIFO deletion size accounting ERROR: expected change %.1f MB but got %.1f MB (diff=%.6f)",
+			expectedSizeChange, actualSizeChange, actualSizeChange-expectedSizeChange))
 	}
 }
 
@@ -512,9 +515,11 @@ func (f *FIFOCompactor) executeIntraL0Compaction(job *CompactionJob, lsm *LSMTre
 	fmt.Printf("[FIFO-INTRA] SIZE CHANGE: expected=%.1f MB (out=%.1f - in=%.1f), actual=%.1f MB\n",
 		expectedSizeChange, outputSize, inputSize, actualSizeChange)
 
-	if actualSizeChange != expectedSizeChange {
-		panic(fmt.Sprintf("FIFO size accounting ERROR: expected change %.1f MB but got %.1f MB",
-			expectedSizeChange, actualSizeChange))
+	// Use epsilon-based comparison for floating-point values to avoid precision errors
+	const epsilon = 0.0001 // Tolerance in MB (0.1 KB)
+	if math.Abs(actualSizeChange-expectedSizeChange) > epsilon {
+		panic(fmt.Sprintf("FIFO size accounting ERROR: expected change %.1f MB but got %.1f MB (diff=%.6f)",
+			expectedSizeChange, actualSizeChange, actualSizeChange-expectedSizeChange))
 	}
 
 	return inputSize, outputSize, 1

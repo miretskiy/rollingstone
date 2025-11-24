@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yevgeniy-miretskiy/rollingstone/simulator"
+	"github.com/miretskiy/rollingstone/simulator"
 )
 
 func main() {

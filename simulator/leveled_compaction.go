@@ -239,50 +239,25 @@ func (c *LeveledCompactor) PickCompaction(lsm *LSMTree, config SimConfig) *Compa
 			}
 		}
 
-		// FIDELITY: ⚠️ SIMPLIFIED - Dynamic threshold based on target level state
+		// RocksDB Compaction Threshold
 		//
-		// RocksDB Reference: LevelCompactionBuilder compaction selection logic
-		// RocksDB doesn't use explicit thresholds (2.0, 1.5) but is more conservative
-		// when compacting into empty levels. RocksDB's logic:
+		// FIDELITY: ✓ EXACT - RocksDB uses fixed threshold of 1.0 for all levels
 		//
-		// - If output level is empty: Requires more data before compacting (conservative)
-		// - If output level has few files: Also more conservative
+		// RocksDB Reference: compaction_picker_level.cc:188
+		//   ```cpp
+		//   if (start_level_score_ >= 1) {
+		//     // Pick compaction for this level
+		//   }
+		//   ```
 		//
-		// Our simulation approximates this with:
-		// - threshold = 2.0 when target level is empty (requires 2x over target before compacting)
-		// - threshold = 1.5 when target level has < 3 files (requires 1.5x over target)
-		// - threshold = 1.0 otherwise (normal compaction when over target)
+		// RocksDB does NOT adjust threshold based on target level state.
+		// When target level is empty, RocksDB:
+		// 1. Still compacts normally (same 1.0 threshold)
+		// 2. Just skips trivial move optimization (compaction_picker_level.cc:606-613)
 		//
-		// FIDELITY: ✓ Matches RocksDB's conservative behavior in spirit
-		// FIDELITY: ⚠️ Constants (2.0, 1.5, 3) are simulation heuristics, not from RocksDB source
-		// These values prevent premature compaction into empty/under-populated levels
+		// Previous bug: We artificially raised threshold to 2.0 for empty levels,
+		// blocking compactions that RocksDB would execute.
 		threshold := 1.0
-		// For L0, check target level (base_level in dynamic mode, L1 in static mode)
-		if ls.level == 0 {
-			baseLevel := 1 // Default for static mode
-			if config.LevelCompactionDynamicLevelBytes {
-				baseLevel = lsm.calculateDynamicBaseLevel(config)
-			}
-			targetLevelIdx := baseLevel
-			if targetLevelIdx < len(lsm.Levels) {
-				targetLevel := lsm.Levels[targetLevelIdx]
-				if targetLevel.FileCount == 0 {
-					threshold = 2.0 // Conservative: require 2x over target before compacting into empty level
-				} else if targetLevel.FileCount < 3 {
-					threshold = 1.5 // Moderate: require 1.5x over target when target has few files
-				}
-			}
-		} else if ls.level > 0 {
-			targetLevelIdx := ls.level + 1
-			if targetLevelIdx < len(lsm.Levels) {
-				targetLevel := lsm.Levels[targetLevelIdx]
-				if targetLevel.FileCount == 0 {
-					threshold = 2.0 // Conservative: require 2x over target before compacting into empty level
-				} else if targetLevel.FileCount < 3 {
-					threshold = 1.5 // Moderate: require 1.5x over target when target has few files
-				}
-			}
-		}
 
 		if ls.score > threshold {
 			bestLevel = ls.level

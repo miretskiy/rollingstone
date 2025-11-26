@@ -85,10 +85,7 @@ func NewUniversalCompactorWithOverlapDist(seed int64, overlapConfig OverlapDistr
 	case DistGeometric:
 		overlapDist = &GeometricDistribution{P: overlapConfig.GeometricP}
 	case DistFixed:
-		percentage := 0.5 // Default value
-		if overlapConfig.FixedPercentage != nil {
-			percentage = *overlapConfig.FixedPercentage
-		}
+		percentage := overlapConfig.FixedPercentage
 		// Clamp to [0.0, 1.0] - allow 0.0 and 1.0 as valid extremes
 		if percentage < 0.0 {
 			percentage = 0.0

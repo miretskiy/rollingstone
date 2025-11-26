@@ -91,10 +91,10 @@ type TrafficDistributionConfig struct {
 
 // OverlapDistributionConfig holds overlap distribution parameters
 type OverlapDistributionConfig struct {
-	Type              DistributionType `json:"type"`                      // Distribution type: Uniform, Exponential, Geometric, Fixed
-	GeometricP        float64          `json:"geometricP"`                // For Geometric: success probability (default 0.3)
-	ExponentialLambda float64          `json:"exponentialLambda"`         // For Exponential: rate parameter (default 0.5)
-	FixedPercentage   *float64         `json:"fixedPercentage,omitempty"` // For Fixed: percentage of level below that overlaps (0.0 to 1.0, default 0.5). Use pointer to distinguish "not set" from "explicitly set to 0.0"
+	Type              DistributionType `json:"type"`              // Distribution type: Uniform, Exponential, Geometric, Fixed
+	GeometricP        float64          `json:"geometricP"`        // For Geometric: success probability (default 0.3)
+	ExponentialLambda float64          `json:"exponentialLambda"` // For Exponential: rate parameter (default 0.5)
+	FixedPercentage   float64          `json:"fixedPercentage"`   // For Fixed: percentage of level below that overlaps (0.0 to 1.0, default 0.5)
 }
 
 // LatencyDistributionType represents the type of latency distribution

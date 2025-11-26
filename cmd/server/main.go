@@ -460,6 +460,24 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			running := false
 			cfg := state.getConfig()
+
+			// Send fresh metrics after reset
+			metrics := state.metrics()
+			metricsMsg := ServerMessage{
+				Type:    "metrics",
+				Metrics: metrics,
+			}
+			safeConn.WriteJSON(metricsMsg)
+
+			// Send fresh state after reset (critical for UI)
+			lsmState := state.state()
+			stateMsg := ServerMessage{
+				Type:  "state",
+				State: lsmState,
+			}
+			safeConn.WriteJSON(stateMsg)
+
+			// Send status last
 			statusMsg := ServerMessage{
 				Type:    "status",
 				Running: &running,
@@ -485,6 +503,23 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					} else {
 						log.Printf("[READ WORKLOAD] Config is nil")
 					}
+
+					// Send fresh metrics and state after config update (may have triggered reset)
+					metrics := state.metrics()
+					metricsMsg := ServerMessage{
+						Type:    "metrics",
+						Metrics: metrics,
+					}
+					safeConn.WriteJSON(metricsMsg)
+
+					lsmState := state.state()
+					stateMsg := ServerMessage{
+						Type:  "state",
+						State: lsmState,
+					}
+					safeConn.WriteJSON(stateMsg)
+
+					// Send status last
 					running := state.isRunning()
 					updatedFullConfig := state.getConfig()
 					statusMsg := ServerMessage{
@@ -509,6 +544,23 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				safeConn.WriteJSON(errorMsg)
 			} else {
 				log.Println("Config reset to defaults")
+
+				// Send fresh metrics and state (reset_config triggers internal reset)
+				metrics := state.metrics()
+				metricsMsg := ServerMessage{
+					Type:    "metrics",
+					Metrics: metrics,
+				}
+				safeConn.WriteJSON(metricsMsg)
+
+				lsmState := state.state()
+				stateMsg := ServerMessage{
+					Type:  "state",
+					State: lsmState,
+				}
+				safeConn.WriteJSON(stateMsg)
+
+				// Send status last
 				running := state.isRunning()
 				statusMsg := ServerMessage{
 					Type:    "status",

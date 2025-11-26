@@ -154,23 +154,26 @@ func (s *Simulator) ensureEventsScheduled() {
 	for i := 0; i < maxFlushes && i < len(pendingFlushSizes); i++ {
 		sizeMB := pendingFlushSizes[i]
 		if sizeMB > 0 {
-			// Calculate flush duration
-			ioTimeSec := sizeMB / s.config.IOThroughputMBps
-			seekTimeSec := s.config.IOLatencyMs / 1000.0
-			flushDuration := ioTimeSec + seekTimeSec
+			// Calculate flush duration using TWO-PHASE MODEL (same as processWrite)
+			// Phase 1: SSTable build (CPU)
+			var cpuDuration float64
+			if s.config.SSTableBuildThroughputMBps > 0 {
+				cpuDuration = sizeMB / s.config.SSTableBuildThroughputMBps
+			}
 
-			// Flush can only start when disk is free
-			flushStartTime := max(s.virtualTime, s.diskBusyUntil)
-			flushCompleteTime := flushStartTime + flushDuration
+			// Phase 2: Disk write (I/O)
+			outputSizeMB := sizeMB * s.config.CompressionFactor
+			ioDuration := (outputSizeMB / s.config.IOThroughputMBps) + (s.config.IOLatencyMs / 1000.0)
 
-			// Reserve disk bandwidth
-			s.diskBusyUntil = flushCompleteTime
+			// Allocate a background job slot
+			arrivalTime := s.virtualTime
+			_, cpuStartTime, _, completionTime := s.allocateJobSlot(arrivalTime, cpuDuration, ioDuration)
 
 			// Track this write as in-progress for throughput calculation
-			s.metrics.StartWrite(sizeMB, sizeMB, flushStartTime, flushCompleteTime, -1, 0)
+			s.metrics.StartWrite(sizeMB, sizeMB, cpuStartTime, completionTime, -1, 0)
 
 			// Schedule flush event
-			s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
+			s.queue.Push(NewFlushEvent(completionTime, cpuStartTime, sizeMB))
 		}
 	}
 

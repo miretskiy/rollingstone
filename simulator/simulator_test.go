@@ -534,15 +534,15 @@ func TestSimulator_Step13_TryScheduleCompaction_ReservesBandwidth(t *testing.T) 
 		})
 	}
 
-	initialAvailableBandwidth := sim.disk.AvailableBandwidthMBps
-	require.Equal(t, float64(config.IOThroughputMBps), initialAvailableBandwidth, "Disk should have full bandwidth available")
+	initialDiskBusyUntil := sim.diskBusyUntil
+	require.Equal(t, 0.0, initialDiskBusyUntil, "Disk should be free initially")
 
 	// Schedule compaction
 	scheduled := sim.tryScheduleCompaction()
 	require.True(t, scheduled, "Should schedule compaction")
 
-	// Verify bandwidth was reserved
-	require.Less(t, sim.disk.AvailableBandwidthMBps, initialAvailableBandwidth, "Available bandwidth should be reduced after scheduling compaction")
+	// Verify disk is now busy (diskBusyUntil advanced)
+	require.Greater(t, sim.diskBusyUntil, initialDiskBusyUntil, "Disk should be busy after scheduling compaction")
 }
 
 // STEP 14: Test that processScheduleWrite schedules WriteEvent at current time

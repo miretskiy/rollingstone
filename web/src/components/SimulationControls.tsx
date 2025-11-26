@@ -445,7 +445,7 @@ export function SimulationControls() {
                             label="Max Table Files Size"
                             field="fifoMaxTableFilesSizeMB"
                             min={100}
-                            max={500000}
+                            max={10000000}
                             unit="MB"
                             tooltip="Total size threshold for FIFO deletion (RocksDB: max_table_files_size). Default: 1024 MB (1 GB). When total LSM size exceeds this, oldest files are deleted." />
                           <div className="flex items-center gap-2 col-span-1">

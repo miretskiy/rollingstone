@@ -15,29 +15,6 @@ type ActiveCompactionInfo struct {
 	IsIntraL0       bool `json:"isIntraL0"`
 }
 
-// Disk tracks available disk bandwidth using a simple token bucket model
-type Disk struct {
-	TotalBandwidthMBps     float64
-	AvailableBandwidthMBps float64
-}
-
-// Reserve attempts to reserve bandwidth. Returns true if successful.
-func (d *Disk) Reserve(bandwidthMBps float64) bool {
-	if d.AvailableBandwidthMBps >= bandwidthMBps {
-		d.AvailableBandwidthMBps -= bandwidthMBps
-		return true
-	}
-	return false
-}
-
-// Refund returns bandwidth tokens to the pool
-func (d *Disk) Refund(bandwidthMBps float64) {
-	d.AvailableBandwidthMBps += bandwidthMBps
-	if d.AvailableBandwidthMBps > d.TotalBandwidthMBps {
-		d.AvailableBandwidthMBps = d.TotalBandwidthMBps
-	}
-}
-
 // Simulator is a PURE discrete event simulator with NO concurrency primitives.
 // All state is accessed single-threaded via the Step() method.
 // The caller (cmd/server) manages pacing, pause/resume, and threading.
@@ -47,7 +24,7 @@ type Simulator struct {
 	metrics                 *Metrics
 	queue                   *EventQueue
 	virtualTime             float64
-	disk                    *Disk                   // Disk bandwidth token bucket
+	diskBusyUntil           float64                 // Virtual time when disk I/O will be free
 	numImmutableMemtables   int                     // Memtables waiting to flush (in addition to active)
 	immutableMemtableSizes  []float64               // Sizes (MB) of immutable memtables waiting to flush
 	compactor               Compactor               // Compaction strategy
@@ -103,15 +80,12 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 	}
 
 	sim := &Simulator{
-		config:      config,
-		lsm:         lsm,
-		metrics:     NewMetrics(),
-		queue:       NewEventQueue(),
-		virtualTime: 0,
-		disk: &Disk{
-			TotalBandwidthMBps:     float64(config.IOThroughputMBps),
-			AvailableBandwidthMBps: float64(config.IOThroughputMBps),
-		},
+		config:                  config,
+		lsm:                     lsm,
+		metrics:                 NewMetrics(),
+		queue:                   NewEventQueue(),
+		virtualTime:             0,
+		diskBusyUntil:           0,
 		numImmutableMemtables:   0,
 		immutableMemtableSizes:  make([]float64, 0),
 		compactor:               compactor,
@@ -177,22 +151,18 @@ func (s *Simulator) ensureEventsScheduled() {
 			seekTimeSec := s.config.IOLatencyMs / 1000.0
 			flushDuration := ioTimeSec + seekTimeSec
 
-			// During initialization, flushes start immediately
-			flushStartTime := s.virtualTime
+			// Flush can only start when disk is free
+			flushStartTime := max(s.virtualTime, s.diskBusyUntil)
 			flushCompleteTime := flushStartTime + flushDuration
 
-			// Calculate bandwidth needed
-			bandwidthMBps := sizeMB / flushDuration
-			// Reserve disk bandwidth (during init, assume bandwidth is available)
-			s.disk.Reserve(bandwidthMBps)
+			// Reserve disk bandwidth
+			s.diskBusyUntil = flushCompleteTime
 
 			// Track this write as in-progress for throughput calculation
 			s.metrics.StartWrite(sizeMB, sizeMB, flushStartTime, flushCompleteTime, -1, 0)
 
-			// Schedule flush event with bandwidth tracking
-			flushEvent := NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB)
-			flushEvent.SetBandwidthMBps(bandwidthMBps)
-			s.queue.Push(flushEvent)
+			// Schedule flush event
+			s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
 		}
 	}
 
@@ -304,12 +274,7 @@ func (s *Simulator) Step() {
 			}
 		}
 
-		// For metrics, report disk as "busy" if no bandwidth available
-		diskBusyUntil := s.virtualTime
-		if s.disk.AvailableBandwidthMBps <= 0 {
-			diskBusyUntil = s.virtualTime // Will show as busy in current instant
-		}
-		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, diskBusyUntil, s.config.IOThroughputMBps,
+		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps,
 			isStalled, stalledCount, s.config.MaxBackgroundJobs, s.config, s.rng)
 
 		// Invariant check: Queue should never be empty after initialization (unless OOM killed)
@@ -568,15 +533,9 @@ func (s *Simulator) Metrics() *Metrics {
 	return s.metrics.Clone()
 }
 
-// GetDiskBusyUntil returns when the disk will be free (for backward compatibility)
-// Returns current virtualTime if disk has available bandwidth, otherwise estimates
-// when bandwidth will become available based on active operations
+// GetDiskBusyUntil returns when the disk will be free
 func (s *Simulator) GetDiskBusyUntil() float64 {
-	if s.disk.AvailableBandwidthMBps > 0 {
-		return s.virtualTime
-	}
-	// If fully saturated, return current time (operations will need to wait for refunds)
-	return s.virtualTime
+	return s.diskBusyUntil
 }
 
 // IsQueueEmpty returns true if the event queue is empty
@@ -754,17 +713,15 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 			walDuration += syncTimeSec
 		}
 
-		// WAL write contends for disk bandwidth (token bucket model)
-		walStartTime := s.virtualTime
+		// WAL write contends for disk bandwidth
+		walStartTime := max(s.virtualTime, s.diskBusyUntil)
 		walCompleteTime := walStartTime + walDuration
 
-		// Calculate and reserve disk bandwidth for WAL write
-		walBandwidthMBps := walSizeMB / walDuration
-		s.disk.Reserve(walBandwidthMBps)
+		// Reserve disk bandwidth
+		s.diskBusyUntil = walCompleteTime
 
-		// Schedule WAL completion event to refund bandwidth
+		// Schedule WAL completion event
 		walEvent := NewWALWriteEvent(walCompleteTime, walStartTime, walSizeMB)
-		walEvent.SetBandwidthMBps(walBandwidthMBps)
 		s.queue.Push(walEvent)
 
 		// Track WAL bytes separately (NOT included in LSM write amplification)
@@ -832,22 +789,18 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		seekTimeSec := s.config.IOLatencyMs / 1000.0
 		flushDuration := compressTimeSec + ioTimeSec + seekTimeSec
 
-		// Flush starts immediately (token bucket model allows parallel operations)
-		flushStartTime := s.virtualTime
+		// Flush can only start when disk is free
+		flushStartTime := max(s.virtualTime, s.diskBusyUntil)
 		flushCompleteTime := flushStartTime + flushDuration
 
-		// Calculate and reserve disk bandwidth (only for I/O portion, not compression)
-		// Bandwidth = (inputMB + outputMB) / duration
-		flushBandwidthMBps := (sizeMB + outputSizeMB) / flushDuration
-		s.disk.Reserve(flushBandwidthMBps)
+		// Reserve disk bandwidth
+		s.diskBusyUntil = flushCompleteTime
 
 		// Track this write as in-progress for throughput calculation
 		s.metrics.StartWrite(sizeMB, sizeMB, flushStartTime, flushCompleteTime, -1, 0) // Flush: memtable → L0
 
-		// Schedule flush event with the SIZE that was frozen and bandwidth reserved
-		flushEvent := NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB)
-		flushEvent.SetBandwidthMBps(flushBandwidthMBps)
-		s.queue.Push(flushEvent)
+		// Schedule flush event with the SIZE that was frozen
+		s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
 
 		// Track earliest flush completion time if we're stalled
 		// This allows stalled writes to schedule retries at flush completion instead of every 1ms
@@ -940,22 +893,14 @@ func (s *Simulator) processFlush(event *FlushEvent) {
 		s.nextFlushCompletionTime = 0
 	}
 
-	// Refund disk bandwidth tokens
-	if event.BandwidthMBps() > 0 {
-		s.disk.Refund(event.BandwidthMBps())
-	}
-
 	// Compactions are handled by periodic CompactionCheckEvent, not triggered by flushes
 	// This is acceptable - RocksDB also uses background threads that wake up periodically
 }
 
-// processWALWrite handles WAL write completion and refunds disk bandwidth
+// processWALWrite handles WAL write completion
 func (s *Simulator) processWALWrite(event *WALWriteEvent) {
-	// WAL write is complete - refund disk bandwidth tokens
-	if event.BandwidthMBps() > 0 {
-		s.disk.Refund(event.BandwidthMBps())
-	}
 	// Note: WAL bytes and activity tracking are done in processWrite() before scheduling this event
+	// No bandwidth refund needed with busy-until model
 }
 
 // processScheduleRead processes read batch scheduling and reserves disk bandwidth
@@ -1020,28 +965,25 @@ func (s *Simulator) processScheduleRead(event *ScheduleReadEvent) {
 	latencySec := s.config.IOLatencyMs / 1000.0
 	readDuration := ioTimeSec + latencySec
 
-	// Calculate and reserve disk bandwidth
-	readBandwidthMBps := totalReadMB / readDuration
-	s.disk.Reserve(readBandwidthMBps)
+	// Read batch can only start when disk is free
+	readStartTime := max(s.virtualTime, s.diskBusyUntil)
+	readCompleteTime := readStartTime + readDuration
+
+	// Reserve disk bandwidth
+	s.diskBusyUntil = readCompleteTime
 
 	// Schedule read batch completion event
-	readStartTime := s.virtualTime
-	readCompleteTime := readStartTime + readDuration
 	readEvent := NewReadBatchEvent(readCompleteTime, readStartTime, totalRequests, pointLookups, scans, cacheHits, bloomNegatives)
-	readEvent.SetBandwidthMBps(readBandwidthMBps)
 	s.queue.Push(readEvent)
 
 	// Schedule next ScheduleReadEvent
 	s.scheduleNextScheduleRead(s.virtualTime + readBatchIntervalSec)
 }
 
-// processReadBatch handles read batch completion and refunds disk bandwidth
+// processReadBatch handles read batch completion
 func (s *Simulator) processReadBatch(event *ReadBatchEvent) {
-	// Read batch is complete - refund disk bandwidth tokens
-	if event.BandwidthMBps() > 0 {
-		s.disk.Refund(event.BandwidthMBps())
-	}
 	// Note: Read metrics are tracked separately by the metrics system
+	// No bandwidth refund needed with busy-until model
 }
 
 // scheduleNextScheduleRead schedules the next ScheduleReadEvent
@@ -1171,11 +1113,6 @@ func (s *Simulator) processCompaction(event *CompactionEvent) {
 	s.metrics.CompleteWrite(event.Timestamp(), fromLevel)
 	inputFileCount := len(job.SourceFiles) + len(job.TargetFiles)
 	s.metrics.RecordCompaction(inputSize, outputSize, event.StartTime(), event.Timestamp(), fromLevel, inputFileCount, outputFileCount, isTrivialMove)
-
-	// Refund disk bandwidth tokens
-	if event.BandwidthMBps() > 0 {
-		s.disk.Refund(event.BandwidthMBps())
-	}
 
 	// DON'T immediately schedule another compaction after this one completes
 	// Compactions are scheduled by periodic CompactionCheckEvent (background threads)
@@ -1355,13 +1292,12 @@ func (s *Simulator) tryScheduleCompaction() bool {
 		compactionDuration = readIOTimeSec + decompressTimeSec + compressTimeSec + writeIOTimeSec + seekTimeSec
 	}
 
-	// Compaction starts immediately (token bucket model allows parallel operations)
-	compactionStartTime := s.virtualTime
+	// Compaction can only start when disk is free
+	compactionStartTime := max(s.virtualTime, s.diskBusyUntil)
 	compactionCompleteTime := compactionStartTime + compactionDuration
 
-	// Calculate and reserve disk bandwidth (input + output over duration)
-	compactionBandwidthMBps := (inputSize + outputSize) / compactionDuration
-	s.disk.Reserve(compactionBandwidthMBps)
+	// Reserve disk bandwidth
+	s.diskBusyUntil = compactionCompleteTime
 
 	// Compactor handles activeCompactions tracking (marked in PickCompaction)
 
@@ -1407,8 +1343,6 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	} else {
 		compactionEvent = NewCompactionEvent(compactionCompleteTime, compactionStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize)
 	}
-	// Set bandwidth reserved for this compaction
-	compactionEvent.SetBandwidthMBps(compactionBandwidthMBps)
 	s.queue.Push(compactionEvent)
 
 	return true

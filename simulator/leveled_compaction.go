@@ -682,35 +682,7 @@ func (c *LeveledCompactor) ExecuteCompaction(job *CompactionJob, lsm *LSMTree, c
 	//
 	// FIDELITY: ✓ Matches RocksDB's parallel execution model
 	// ⚠️ SIMPLIFIED: Subcompactions execute sequentially in simulation (modeled as parallel)
-	// - RocksDB: truly parallel threads
-	// - Simulator: execute sequentially but aggregate results as if parallel
-	// - Duration calculated as max(subcompaction durations) in scheduling code
-	if len(job.Subcompactions) > 0 {
-		// Execute each subcompaction independently
-		// All subcompactions run in parallel (modeled by max duration in scheduling)
-		for _, subcompaction := range job.Subcompactions {
-			// Create a temporary CompactionJob for this subcompaction
-			subJob := &CompactionJob{
-				FromLevel:   job.FromLevel,
-				ToLevel:     job.ToLevel,
-				SourceFiles: subcompaction.SourceFiles,
-				TargetFiles: subcompaction.TargetFiles,
-				IsIntraL0:   job.IsIntraL0,
-			}
-
-			// Execute this subcompaction (recurse, but without subcompactions to avoid infinite loop)
-			subInput, subOutput, subFileCount := c.executeCompactionSingle(subJob, lsm, config, virtualTime)
-			inputSize += subInput
-			outputSize += subOutput
-			outputFileCount += subFileCount
-		}
-
-		fmt.Printf("[SUBPCOMPACTION] L%d→L%d: Executed %d subcompactions, total input=%.1fMB, output=%.1fMB, %d files\n",
-			job.FromLevel, job.ToLevel, len(job.Subcompactions), inputSize, outputSize, outputFileCount)
-		return inputSize, outputSize, outputFileCount
-	}
-
-	// Single compaction (no subcompactions) - execute normally
+	// All compactions are single-job (subcompactions removed for simplicity)
 	return c.executeCompactionSingle(job, lsm, config, virtualTime)
 }
 

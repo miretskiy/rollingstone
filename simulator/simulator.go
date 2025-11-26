@@ -24,7 +24,8 @@ type Simulator struct {
 	metrics                 *Metrics
 	queue                   *EventQueue
 	virtualTime             float64
-	diskBusyUntil           float64                 // Virtual time when disk I/O will be free
+	diskBusyUntil           float64                 // Virtual time when disk I/O will be free (global disk resource)
+	backgroundJobSlots      []float64               // Per-slot busy times (len = max_background_jobs, tracks when each background thread slot is free)
 	numImmutableMemtables   int                     // Memtables waiting to flush (in addition to active)
 	immutableMemtableSizes  []float64               // Sizes (MB) of immutable memtables waiting to flush
 	compactor               Compactor               // Compaction strategy
@@ -79,6 +80,12 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		rng = rand.New(rand.NewSource(config.RandomSeed))
 	}
 
+	// Initialize background job slots (all free initially)
+	jobSlots := make([]float64, config.MaxBackgroundJobs)
+	for i := range jobSlots {
+		jobSlots[i] = 0.0 // All slots free at T=0
+	}
+
 	sim := &Simulator{
 		config:                  config,
 		lsm:                     lsm,
@@ -86,6 +93,7 @@ func NewSimulator(config SimConfig) (*Simulator, error) {
 		queue:                   NewEventQueue(),
 		virtualTime:             0,
 		diskBusyUntil:           0,
+		backgroundJobSlots:      jobSlots,
 		numImmutableMemtables:   0,
 		immutableMemtableSizes:  make([]float64, 0),
 		compactor:               compactor,
@@ -274,8 +282,9 @@ func (s *Simulator) Step() {
 			}
 		}
 
+		activeJobs := s.countActiveBackgroundJobs()
 		s.metrics.Update(s.virtualTime, s.lsm, numMemtables, s.diskBusyUntil, s.config.IOThroughputMBps,
-			isStalled, stalledCount, s.config.MaxBackgroundJobs, s.config, s.rng)
+			isStalled, stalledCount, activeJobs, s.config.MaxBackgroundJobs, s.config, s.rng)
 
 		// Invariant check: Queue should never be empty after initialization (unless OOM killed)
 		// ScheduleWriteEvent and CompactionCheckEvent are self-perpetuating
@@ -538,6 +547,53 @@ func (s *Simulator) GetDiskBusyUntil() float64 {
 	return s.diskBusyUntil
 }
 
+// findEarliestJobSlot returns the index and busy-until time of the earliest available background job slot
+func (s *Simulator) findEarliestJobSlot() (slotIndex int, earliestBusyUntil float64) {
+	earliestBusyUntil = s.backgroundJobSlots[0]
+	slotIndex = 0
+	for i := 1; i < len(s.backgroundJobSlots); i++ {
+		if s.backgroundJobSlots[i] < earliestBusyUntil {
+			earliestBusyUntil = s.backgroundJobSlots[i]
+			slotIndex = i
+		}
+	}
+	return slotIndex, earliestBusyUntil
+}
+
+// countActiveBackgroundJobs returns the number of background job slots currently busy
+func (s *Simulator) countActiveBackgroundJobs() int {
+	activeCount := 0
+	for _, busyUntil := range s.backgroundJobSlots {
+		if busyUntil > s.virtualTime {
+			activeCount++
+		}
+	}
+	return activeCount
+}
+
+// allocateJobSlot finds the earliest available slot and reserves it until the given completion time
+// Returns the slot index and when the job can actually start (max of arrival time and slot availability)
+func (s *Simulator) allocateJobSlot(arrivalTime, cpuDuration, ioDuration float64) (slotIndex int, cpuStartTime, ioStartTime, completionTime float64) {
+	// Find earliest free slot
+	slotIndex, slotBusyUntil := s.findEarliestJobSlot()
+
+	// CPU phase can start when slot is free
+	cpuStartTime = max(arrivalTime, slotBusyUntil)
+	cpuCompleteTime := cpuStartTime + cpuDuration
+
+	// I/O phase can start when both CPU is done AND disk is free
+	ioStartTime = max(cpuCompleteTime, s.diskBusyUntil)
+	completionTime = ioStartTime + ioDuration
+
+	// Reserve the slot until job completes
+	s.backgroundJobSlots[slotIndex] = completionTime
+
+	// Reserve disk until I/O completes
+	s.diskBusyUntil = completionTime
+
+	return slotIndex, cpuStartTime, ioStartTime, completionTime
+}
+
 // IsQueueEmpty returns true if the event queue is empty
 func (s *Simulator) IsQueueEmpty() bool {
 	return s.queue.IsEmpty()
@@ -760,47 +816,43 @@ func (s *Simulator) processWrite(event *WriteEvent) {
 		s.lsm.MemtableCurrentSize = 0
 		s.lsm.MemtableCreatedAt = s.virtualTime
 
-		// Calculate flush duration: time to write memtable to disk
-		// FIDELITY: ⚠️ SIMPLIFIED - Disk I/O modeling
+		// Calculate flush duration using TWO-PHASE MODEL:
+		// Phase 1 (CPU): Build SSTable (compress, create bloom filter, build index)
+		// Phase 2 (I/O): Write SSTable to disk
 		//
-		// RocksDB I/O system (we don't model all of this):
-		//   - RateLimiter: Optional global I/O rate limit (default: disabled)
-		//   - WriteController: Automatic write throttling (32 MB/s when behind)
-		//   - WritableFileWriter: Buffered writes with fsync control
-		//   - I/O prioritization: Low-priority compactions don't starve reads
+		// FIDELITY: ⚠️ SIMPLIFIED - CPU and I/O are pipelined in RocksDB, we model as sequential phases
 		//
-		// Our token bucket model:
-		//   - duration = (data_size / throughput) + latency
-		//   - Disk bandwidth tracked as available tokens
-		//   - Operations reserve tokens, refund on completion
-		//   - Captures: I/O contention between flush and compaction
-		//   - Missing: Dynamic write throttling, I/O prioritization
-		//   - Impact: Minor - we model the dominant effect (disk saturation)
-		// Calculate flush duration using ADDITIVE MODEL
-		// Flush process: compress memtable → write compressed data to L0 file
-		// Operations are sequential: compress + write I/O + seek
-		var compressTimeSec float64
-		if s.config.CompressionThroughputMBps > 0 {
-			compressTimeSec = sizeMB / s.config.CompressionThroughputMBps
+		// RocksDB reality:
+		//   - CPU work (compression, bloom, index) happens in background threads
+		//   - I/O is pipelined: blocks written as they're compressed
+		//   - max_background_jobs limits concurrent operations
+		//
+		// Our model:
+		//   - CPU phase: SSTable build (includes compression)
+		//   - I/O phase: Disk writes (serialized globally)
+		//   - Background job slots: Allow max_background_jobs concurrent operations
+		//   - Each slot can run CPU work independently, but all share the disk for I/O
+
+		// Phase 1: SSTable build (CPU-bound: compression, bloom, index)
+		var cpuDuration float64
+		if s.config.SSTableBuildThroughputMBps > 0 {
+			cpuDuration = sizeMB / s.config.SSTableBuildThroughputMBps
 		}
-		// After compression, the actual data written is reduced by compression factor
+
+		// Phase 2: Disk write (I/O-bound)
 		outputSizeMB := sizeMB * s.config.CompressionFactor
-		ioTimeSec := outputSizeMB / s.config.IOThroughputMBps
-		seekTimeSec := s.config.IOLatencyMs / 1000.0
-		flushDuration := compressTimeSec + ioTimeSec + seekTimeSec
+		ioDuration := (outputSizeMB / s.config.IOThroughputMBps) + (s.config.IOLatencyMs / 1000.0)
 
-		// Flush can only start when disk is free
-		flushStartTime := max(s.virtualTime, s.diskBusyUntil)
-		flushCompleteTime := flushStartTime + flushDuration
-
-		// Reserve disk bandwidth
-		s.diskBusyUntil = flushCompleteTime
+		// Allocate a background job slot
+		arrivalTime := s.virtualTime
+		_, cpuStartTime, _, completionTime := s.allocateJobSlot(arrivalTime, cpuDuration, ioDuration)
 
 		// Track this write as in-progress for throughput calculation
-		s.metrics.StartWrite(sizeMB, sizeMB, flushStartTime, flushCompleteTime, -1, 0) // Flush: memtable → L0
+		// Use cpuStartTime as the overall start time (when background job begins)
+		s.metrics.StartWrite(sizeMB, sizeMB, cpuStartTime, completionTime, -1, 0) // Flush: memtable → L0
 
 		// Schedule flush event with the SIZE that was frozen
-		s.queue.Push(NewFlushEvent(flushCompleteTime, flushStartTime, sizeMB))
+		s.queue.Push(NewFlushEvent(completionTime, cpuStartTime, sizeMB))
 
 		// Track earliest flush completion time if we're stalled
 		// This allows stalled writes to schedule retries at flush completion instead of every 1ms
@@ -1157,147 +1209,52 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	fmt.Printf("[SCHEDULE] t=%.1f: L%d→L%d: scheduling compaction with %d source files, %d target files\n",
 		s.virtualTime, job.FromLevel, job.ToLevel, len(job.SourceFiles), len(job.TargetFiles))
 
-	// Check if subcompactions should be formed and split the job if needed
-	//
-	// RocksDB Reference: CompactionJob::Prepare() and GenSubcompactionBoundaries()
-	// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_job.cc#L256-L280
-	//
-	// RocksDB C++ (lines 277-280):
-	//
-	//	if (!known_single_subcompact.has_value() && c->ShouldFormSubcompactions()) {
-	//	  StopWatch sw(db_options_.clock, stats_, SUBCOMPACTION_SETUP_TIME);
-	//	  GenSubcompactionBoundaries();
-	//	}
-	//
-	// FIDELITY: ✓ Matches RocksDB's subcompaction splitting timing
-	// Subcompactions are split at scheduling time, before duration calculation
-	if ShouldFormSubcompactions(job, s.config, s.config.CompactionStyle) {
-		// Get RNG from compactor (both leveled and universal have it)
-		var rng *rand.Rand
-		switch c := s.compactor.(type) {
-		case *LeveledCompactor:
-			rng = c.rng
-		case *UniversalCompactor:
-			rng = c.rng
-		default:
-			panic(fmt.Sprintf("unknown compactor type: %T", s.compactor))
-		}
-
-		// Split into subcompactions
-		subcompactions := splitIntoSubcompactions(job, s.config, rng)
-		if len(subcompactions) > 0 {
-			job.Subcompactions = subcompactions
-			fmt.Printf("[SCHEDULE] Split compaction into %d subcompactions\n", len(subcompactions))
-		}
-	}
-
 	// Calculate input and output sizes
-	// If subcompactions exist, calculate based on subcompactions (they split the work)
 	var inputSize float64
-	var outputSize float64
-	var compactionDuration float64
-
-	if len(job.Subcompactions) > 0 {
-		// Subcompactions: calculate duration as max(subcompaction durations)
-		//
-		// RocksDB Reference: CompactionJob::RunSubcompactions()
-		// Subcompactions run in parallel, so total duration = max(subcompaction durations)
-		// GitHub: https://github.com/facebook/rocksdb/blob/main/db/compaction/compaction_job.cc#L710-L735
-		//
-		// FIDELITY: ✓ Matches RocksDB's parallel execution model
-		// - Subcompactions execute in parallel threads
-		// - Total duration = max(subcompaction durations) + small overhead
-		maxSubcompactionDuration := 0.0
-		for _, subcompaction := range job.Subcompactions {
-			// Calculate input size for this subcompaction
-			var subInputSize float64
-			for _, f := range subcompaction.SourceFiles {
-				subInputSize += f.SizeMB
-			}
-			for _, f := range subcompaction.TargetFiles {
-				subInputSize += f.SizeMB
-			}
-
-			// Apply reduction factors (deduplication + compression)
-			var deduplicationFactor float64
-			if job.FromLevel == 0 && job.ToLevel == 1 {
-				deduplicationFactor = s.config.DeduplicationFactor
-			} else {
-				deduplicationFactor = 0.99 // Minimal dedup for deeper levels
-			}
-			subOutputSize := subInputSize * deduplicationFactor * s.config.CompressionFactor
-
-			// Calculate duration for this subcompaction
-			// ADDITIVE MODEL: read I/O + decompress + compress + write I/O (sequential operations)
-			readIOTimeSec := subInputSize / s.config.IOThroughputMBps
-			var decompressTimeSec float64
-			if s.config.DecompressionThroughputMBps > 0 {
-				decompressTimeSec = subInputSize / s.config.DecompressionThroughputMBps
-			}
-			var compressTimeSec float64
-			if s.config.CompressionThroughputMBps > 0 {
-				compressTimeSec = subOutputSize / s.config.CompressionThroughputMBps
-			}
-			writeIOTimeSec := subOutputSize / s.config.IOThroughputMBps
-			subSeekTimeSec := s.config.IOLatencyMs / 1000.0
-
-			subDuration := readIOTimeSec + decompressTimeSec + compressTimeSec + writeIOTimeSec + subSeekTimeSec
-
-			if subDuration > maxSubcompactionDuration {
-				maxSubcompactionDuration = subDuration
-			}
-
-			// Accumulate total sizes
-			inputSize += subInputSize
-			outputSize += subOutputSize
-		}
-
-		// Total duration = max(subcompaction durations) + small overhead
-		// Overhead accounts for synchronization, thread coordination, etc.
-		const subcompactionOverhead = 0.01 // 10ms overhead
-		compactionDuration = maxSubcompactionDuration + subcompactionOverhead
-	} else {
-		// Single compaction (no subcompactions)
-		for _, f := range job.SourceFiles {
-			inputSize += f.SizeMB
-		}
-		for _, f := range job.TargetFiles {
-			inputSize += f.SizeMB
-		}
-
-		// Apply reduction factors (deduplication + compression)
-		var deduplicationFactor float64
-		if job.FromLevel == 0 && job.ToLevel == 1 {
-			deduplicationFactor = s.config.DeduplicationFactor
-		} else {
-			deduplicationFactor = 0.99 // Minimal dedup for deeper levels
-		}
-		outputSize = inputSize * deduplicationFactor * s.config.CompressionFactor
-
-		// Calculate compaction duration using ADDITIVE MODEL
-		// Compaction process: read input → decompress → merge → compress → write output
-		// All operations are sequential (cannot compress before decompressing input)
-		readIOTimeSec := inputSize / s.config.IOThroughputMBps
-		var decompressTimeSec float64
-		if s.config.DecompressionThroughputMBps > 0 {
-			decompressTimeSec = inputSize / s.config.DecompressionThroughputMBps
-		}
-		var compressTimeSec float64
-		if s.config.CompressionThroughputMBps > 0 {
-			compressTimeSec = outputSize / s.config.CompressionThroughputMBps
-		}
-		writeIOTimeSec := outputSize / s.config.IOThroughputMBps
-		seekTimeSec := s.config.IOLatencyMs / 1000.0
-
-		compactionDuration = readIOTimeSec + decompressTimeSec + compressTimeSec + writeIOTimeSec + seekTimeSec
+	for _, f := range job.SourceFiles {
+		inputSize += f.SizeMB
+	}
+	for _, f := range job.TargetFiles {
+		inputSize += f.SizeMB
 	}
 
-	// Compaction can only start when disk is free
-	compactionStartTime := max(s.virtualTime, s.diskBusyUntil)
-	compactionCompleteTime := compactionStartTime + compactionDuration
+	// Apply reduction factors (deduplication + compression)
+	var deduplicationFactor float64
+	if job.FromLevel == 0 && job.ToLevel == 1 {
+		deduplicationFactor = s.config.DeduplicationFactor
+	} else {
+		deduplicationFactor = 0.99 // Minimal dedup for deeper levels
+	}
+	outputSize := inputSize * deduplicationFactor * s.config.CompressionFactor
 
-	// Reserve disk bandwidth
-	s.diskBusyUntil = compactionCompleteTime
+	// Calculate compaction duration using TWO-PHASE MODEL
+	// Phase 1 (CPU): Decompress input + build output SSTable (merge, compress, bloom, index)
+	// Phase 2 (I/O): Read input + write output to disk
+	//
+	// FIDELITY: ⚠️ SIMPLIFIED - CPU and I/O are pipelined in RocksDB, we model as sequential phases
+	//
+	// NOTE: In reality these are pipelined, but we model as sequential phases for simplicity
+	var decompressTimeSec float64
+	if s.config.DecompressionThroughputMBps > 0 {
+		decompressTimeSec = inputSize / s.config.DecompressionThroughputMBps
+	}
+	var sstableBuildTimeSec float64
+	if s.config.SSTableBuildThroughputMBps > 0 {
+		sstableBuildTimeSec = outputSize / s.config.SSTableBuildThroughputMBps
+	}
+
+	// CPU phase: decompress + build (sequential CPU work)
+	cpuDuration := decompressTimeSec + sstableBuildTimeSec
+
+	// I/O phase: read + write + seek
+	readIOTimeSec := inputSize / s.config.IOThroughputMBps
+	writeIOTimeSec := outputSize / s.config.IOThroughputMBps
+	seekTimeSec := s.config.IOLatencyMs / 1000.0
+	ioDuration := readIOTimeSec + writeIOTimeSec + seekTimeSec
+
+	// Allocate a background job slot
+	arrivalTime := s.virtualTime
+	_, cpuStartTime, _, completionTime := s.allocateJobSlot(arrivalTime, cpuDuration, ioDuration)
 
 	// Compactor handles activeCompactions tracking (marked in PickCompaction)
 
@@ -1334,15 +1291,10 @@ func (s *Simulator) tryScheduleCompaction() bool {
 	s.pendingCompactions[compactionID] = job
 
 	// Track this write as in-progress for throughput calculation
-	s.metrics.StartWrite(inputSize, outputSize, compactionStartTime, compactionCompleteTime, job.FromLevel, job.ToLevel)
+	s.metrics.StartWrite(inputSize, outputSize, cpuStartTime, completionTime, job.FromLevel, job.ToLevel)
 
-	// Schedule compaction event (with subcompaction count if applicable)
-	var compactionEvent *CompactionEvent
-	if len(job.Subcompactions) > 0 {
-		compactionEvent = NewCompactionEventWithSubcompactions(compactionCompleteTime, compactionStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize, len(job.Subcompactions))
-	} else {
-		compactionEvent = NewCompactionEvent(compactionCompleteTime, compactionStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize)
-	}
+	// Schedule compaction event
+	compactionEvent := NewCompactionEvent(completionTime, cpuStartTime, compactionID, job.FromLevel, job.ToLevel, inputSize, outputSize)
 	s.queue.Push(compactionEvent)
 
 	return true

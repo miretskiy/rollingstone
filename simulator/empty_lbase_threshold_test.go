@@ -14,15 +14,16 @@ import (
 // RocksDB DOES compact to empty base level - it just skips trivial move.
 //
 // RocksDB C++ (lines 606-613):
-//   ```cpp
-//   if (start_level_ == 0 && mutable_cf_options_.compression_per_level.empty() &&
-//       !vstorage_->LevelFiles(output_level_).empty() &&  // <-- Skips trivial move if empty
-//       ioptions_.db_paths.size() <= 1) {
-//     // ...
-//     // We skip the case where output level is empty, since in this case, at
-//     // least the oldest file would qualify for trivial move, and this would
-//     // be a surprising behavior with few benefits.
-//   ```
+//
+//	```cpp
+//	if (start_level_ == 0 && mutable_cf_options_.compression_per_level.empty() &&
+//	    !vstorage_->LevelFiles(output_level_).empty() &&  // <-- Skips trivial move if empty
+//	    ioptions_.db_paths.size() <= 1) {
+//	  // ...
+//	  // We skip the case where output level is empty, since in this case, at
+//	  // least the oldest file would qualify for trivial move, and this would
+//	  // be a surprising behavior with few benefits.
+//	```
 //
 // RocksDB has NO threshold check. It compacts when score > 1.0 regardless
 // of whether target level is empty.

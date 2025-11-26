@@ -106,62 +106,36 @@ func (e *FlushEvent) String() string {
 
 // CompactionEvent represents a compaction from one level to another
 type CompactionEvent struct {
-	timestamp          float64
-	startTime          float64 // When the compaction started
-	compactionID       int     // Unique ID to look up the compaction job
-	fromLevel          int
-	toLevel            int
-	inputSizeMB        float64
-	outputSizeMB       float64
-	subcompactionCount int     // Number of subcompactions (0 = single compaction, >0 = subcompactions)
-	bandwidthMBps      float64 // Disk bandwidth reserved for this compaction
+	timestamp    float64
+	startTime    float64 // When the compaction started
+	compactionID int     // Unique ID to look up the compaction job
+	fromLevel    int
+	toLevel      int
+	inputSizeMB  float64
+	outputSizeMB float64
 }
 
 func NewCompactionEvent(timestamp, startTime float64, compactionID, fromLevel, toLevel int, inputSizeMB, outputSizeMB float64) *CompactionEvent {
 	return &CompactionEvent{
-		timestamp:          timestamp,
-		startTime:          startTime,
-		compactionID:       compactionID,
-		fromLevel:          fromLevel,
-		toLevel:            toLevel,
-		inputSizeMB:        inputSizeMB,
-		outputSizeMB:       outputSizeMB,
-		subcompactionCount: 0, // Default: single compaction
-		bandwidthMBps:      0, // Backward compatibility: 0 means no bandwidth tracking
+		timestamp:    timestamp,
+		startTime:    startTime,
+		compactionID: compactionID,
+		fromLevel:    fromLevel,
+		toLevel:      toLevel,
+		inputSizeMB:  inputSizeMB,
+		outputSizeMB: outputSizeMB,
 	}
 }
 
-// NewCompactionEventWithSubcompactions creates a compaction event with subcompaction count
-func NewCompactionEventWithSubcompactions(timestamp, startTime float64, compactionID, fromLevel, toLevel int, inputSizeMB, outputSizeMB float64, subcompactionCount int) *CompactionEvent {
-	return &CompactionEvent{
-		timestamp:          timestamp,
-		startTime:          startTime,
-		compactionID:       compactionID,
-		fromLevel:          fromLevel,
-		toLevel:            toLevel,
-		inputSizeMB:        inputSizeMB,
-		outputSizeMB:       outputSizeMB,
-		subcompactionCount: subcompactionCount,
-		bandwidthMBps:      0, // Backward compatibility: 0 means no bandwidth tracking
-	}
-}
-
-func (e *CompactionEvent) Timestamp() float64          { return e.timestamp }
-func (e *CompactionEvent) StartTime() float64          { return e.startTime }
-func (e *CompactionEvent) Type() EventType             { return EventTypeCompaction }
-func (e *CompactionEvent) CompactionID() int           { return e.compactionID }
-func (e *CompactionEvent) FromLevel() int              { return e.fromLevel }
-func (e *CompactionEvent) ToLevel() int                { return e.toLevel }
-func (e *CompactionEvent) InputSizeMB() float64        { return e.inputSizeMB }
-func (e *CompactionEvent) OutputSizeMB() float64       { return e.outputSizeMB }
-func (e *CompactionEvent) SubcompactionCount() int     { return e.subcompactionCount }
-func (e *CompactionEvent) BandwidthMBps() float64      { return e.bandwidthMBps }
-func (e *CompactionEvent) SetBandwidthMBps(bw float64) { e.bandwidthMBps = bw }
+func (e *CompactionEvent) Timestamp() float64    { return e.timestamp }
+func (e *CompactionEvent) StartTime() float64    { return e.startTime }
+func (e *CompactionEvent) Type() EventType       { return EventTypeCompaction }
+func (e *CompactionEvent) CompactionID() int     { return e.compactionID }
+func (e *CompactionEvent) FromLevel() int        { return e.fromLevel }
+func (e *CompactionEvent) ToLevel() int          { return e.toLevel }
+func (e *CompactionEvent) InputSizeMB() float64  { return e.inputSizeMB }
+func (e *CompactionEvent) OutputSizeMB() float64 { return e.outputSizeMB }
 func (e *CompactionEvent) String() string {
-	if e.subcompactionCount > 0 {
-		return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB, %d subcompactions)",
-			e.timestamp, e.fromLevel, e.toLevel, e.inputSizeMB, e.outputSizeMB, e.subcompactionCount)
-	}
 	return fmt.Sprintf("Compaction(t=%.3fs, L%d->L%d, in=%.2fMB, out=%.2fMB)",
 		e.timestamp, e.fromLevel, e.toLevel, e.inputSizeMB, e.outputSizeMB)
 }

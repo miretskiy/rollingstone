@@ -364,15 +364,15 @@ export function SimulationControls() {
                   <>
                     <ConfigInput label="Level Size Multiplier" field="levelMultiplier" min={2} max={100}
                       tooltip="Size multiplier between levels (default: 10)" />
-                    <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
-                      tooltip="Max concurrent compaction jobs" />
+                    <ConfigInput label="Max Background Jobs" field="maxBackgroundJobs" min={1} max={32}
+                      tooltip="RocksDB max_background_jobs: Max concurrent background threads for flushes AND compactions. Default: 2. Higher values allow more parallel operations but consume more CPU/memory." />
                     <ConfigInput label="Number of Levels" field="numLevels" min={2} max={10}
                       tooltip="Total number of LSM levels (including L0)" />
                   </>
                 )}
                 {compactionStyle === 'fifo' && (
-                  <ConfigInput label="Compaction Parallelism" field="maxBackgroundJobs" min={1} max={32}
-                    tooltip="Max concurrent compaction jobs" />
+                  <ConfigInput label="Max Background Jobs" field="maxBackgroundJobs" min={1} max={32}
+                    tooltip="RocksDB max_background_jobs: Max concurrent background threads for flushes AND compactions. Default: 2. Higher values allow more parallel operations but consume more CPU/memory." />
                 )}
               </div>
 
@@ -402,10 +402,6 @@ export function SimulationControls() {
                       )}
                       <ConfigInput label="Max Compaction Bytes" field="maxCompactionBytesMB" min={100} max={10000} unit="MB"
                         tooltip="Max total input size for single compaction (RocksDB: max_compaction_bytes)" />
-                      {compactionStyle !== 'fifo' && (
-                        <ConfigInput label="Max Subcompactions" field="maxSubcompactions" min={1} max={16}
-                          tooltip="Parallelism within a single compaction job (RocksDB: max_subcompactions). Default: 1 (disabled). Splits large compactions into multiple parallel subcompactions, reducing compaction duration. Applies to L0→L1 compactions for leveled style, and L0→L1+ compactions for universal style. Higher values (e.g., 4-8) can significantly speed up large L0 compactions." />
-                      )}
                       {compactionStyle === 'universal' && (
                         <ConfigInput 
                           label="Max Size Amplification" 
@@ -1152,6 +1148,7 @@ export function SimulationControls() {
                         compressionFactor: 0.85,
                         compressionThroughputMBps: 750,
                         decompressionThroughputMBps: 3700,
+                        sstableBuildThroughputMBps: 75,
                         blockSizeKB: 4,
                       });
                     } else if (preset === 'snappy') {
@@ -1159,6 +1156,7 @@ export function SimulationControls() {
                         compressionFactor: 0.83,
                         compressionThroughputMBps: 530,
                         decompressionThroughputMBps: 1800,
+                        sstableBuildThroughputMBps: 90,
                         blockSizeKB: 4,
                       });
                     } else if (preset === 'zstd') {
@@ -1166,6 +1164,7 @@ export function SimulationControls() {
                         compressionFactor: 0.70,
                         compressionThroughputMBps: 470,
                         decompressionThroughputMBps: 1380,
+                        sstableBuildThroughputMBps: 50,
                         blockSizeKB: 4,
                       });
                     } else if (preset === 'none') {
@@ -1173,6 +1172,7 @@ export function SimulationControls() {
                         compressionFactor: 1.0,
                         compressionThroughputMBps: 0,
                         decompressionThroughputMBps: 0,
+                        sstableBuildThroughputMBps: 200,
                         blockSizeKB: 4,
                       });
                     }
@@ -1207,7 +1207,7 @@ export function SimulationControls() {
                   min={0}
                   max={5000}
                   unit="MB/s"
-                  tooltip="CPU throughput for compression (0 = infinite/no CPU cost). LZ4: 750 MB/s, Snappy: 530 MB/s, Zstd: 470 MB/s (single-threaded)" />
+                  tooltip="LEGACY: Kept for compatibility. For write path (flush/compaction), use 'SSTable Build Rate' instead. This parameter is unused in current implementation." />
                 <ConfigInput
                   label="Decompression Speed"
                   field="decompressionThroughputMBps"
@@ -1697,6 +1697,8 @@ export function SimulationControls() {
                   tooltip="Disk operation latency" />
                 <ConfigInput label="I/O Throughput" field="ioThroughputMBps" min={10} max={10000} unit="MB/s"
                   tooltip="Max disk bandwidth (shared by all operations)" />
+                <ConfigInput label="SSTable Build Rate" field="sstableBuildThroughputMBps" min={0} max={1000} unit="MB/s"
+                  tooltip="CPU throughput for building SSTables (compression + bloom filters + index). Includes all CPU work during flush/compaction. Set to 0 for infinite (no CPU cost). LZ4: ~75 MB/s, Snappy: ~75-100 MB/s, Zstd: ~50 MB/s, No compression: ~200 MB/s" />
               </div>
 
               {/* WAL Configuration */}

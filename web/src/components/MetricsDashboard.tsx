@@ -433,6 +433,12 @@ export function MetricsDashboard() {
                                 {currentMetrics.inProgressCount} active {currentMetrics.inProgressCount === 1 ? 'write' : 'writes'}
                             </div>
                         )}
+                        {currentMetrics?.activeBackgroundJobs !== undefined && currentMetrics?.maxBackgroundJobs && (
+                            <div className="text-sm text-cyan-400 flex items-center gap-2">
+                                <span className={currentMetrics.activeBackgroundJobs > 0 ? "animate-pulse" : ""}>⚙</span>
+                                {currentMetrics.activeBackgroundJobs}/{currentMetrics.maxBackgroundJobs} background jobs
+                            </div>
+                        )}
                         {currentState?.activeCompactionInfos && currentState.activeCompactionInfos.length > 0 && (
                             <div className="text-sm text-gray-400">
                                 Compacting: {currentState.activeCompactionInfos.map(info => `L${info.fromLevel}→L${info.toLevel}`).join(', ')}

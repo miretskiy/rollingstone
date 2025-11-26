@@ -205,11 +205,26 @@ type SimConfig struct {
 
 	// Compression CPU Performance
 	// RocksDB uses compression algorithms like LZ4, Snappy, or Zstd which consume CPU cycles
-	// These parameters model the CPU cost of compression/decompression on the critical path
-	// Based on real benchmarks: LZ4 ~750 MB/s compress, 3700 MB/s decompress (single-threaded)
-	CompressionThroughputMBps   float64 `json:"compressionThroughputMBps"`   // CPU throughput for compression (MB/s), 0 = infinite (no CPU cost)
-	DecompressionThroughputMBps float64 `json:"decompressionThroughputMBps"` // CPU throughput for decompression (MB/s), 0 = infinite (no CPU cost)
+	// NOTE: CompressionThroughputMBps is ONLY used for read path decompression modeling
+	// For write path (flush/compaction), compression cost is included in SSTableBuildThroughputMBps below
+	CompressionThroughputMBps   float64 `json:"compressionThroughputMBps"`   // CPU throughput for compression (MB/s), UNUSED for writes, kept for read modeling compatibility
+	DecompressionThroughputMBps float64 `json:"decompressionThroughputMBps"` // CPU throughput for decompression (MB/s), used for read path modeling
 	BlockSizeKB                 int     `json:"blockSizeKB"`                 // SST block size in KB (RocksDB default: 4 KB) - affects compression efficiency and read amplification
+
+	// SSTable Build CPU Performance (Write Path)
+	// Building an SSTable during flush/compaction involves:
+	//   1. Formatting data blocks (key/value encoding)
+	//   2. Compressing blocks (if compression enabled)
+	//   3. Building bloom filters (hash computations)
+	//   4. Building index blocks (boundary keys, block handles)
+	// This is CPU-bound work that happens BEFORE disk writes (pipelined with I/O in RocksDB)
+	// Representative rates:
+	//   - No compression: ~200 MB/s (bloom + index only)
+	//   - LZ4 compression: ~75 MB/s (compression dominates)
+	//   - Snappy: ~75-100 MB/s
+	//   - Zstd: ~50 MB/s (slower compression)
+	// Set to 0 for infinite speed (no CPU cost modeling)
+	SSTableBuildThroughputMBps float64 `json:"sstableBuildThroughputMBps"` // Combined CPU throughput for SSTable construction including compression (MB/s), 0 = infinite
 
 	// Compaction Parallelism & Performance
 	MaxBackgroundJobs                int             `json:"maxBackgroundJobs"`                // max_background_jobs (default 2) - parallel compactions
@@ -264,9 +279,10 @@ func DefaultConfig() SimConfig {
 		TargetFileSizeMultiplier:         2,                        // 2x multiplier per level (L1=64MB, L2=128MB, L3=256MB, etc.)
 		DeduplicationFactor:              0.9,                      // 10% logical reduction (tombstones, overwrites)
 		CompressionFactor:                0.85,                     // 15% physical reduction with 4KB blocks (LZ4/Snappy), more realistic than 0.7
-		CompressionThroughputMBps:        750,                      // LZ4 compression speed (single-threaded, from benchmarks)
+		CompressionThroughputMBps:        750,                      // LZ4 compression speed (single-threaded, from benchmarks) - UNUSED for writes
 		DecompressionThroughputMBps:      3700,                     // LZ4 decompression speed (single-threaded, from benchmarks)
 		BlockSizeKB:                      4,                        // 4 KB block size (RocksDB default, verified in source)
+		SSTableBuildThroughputMBps:       75,                       // 75 MB/s SSTable build (includes compression, bloom, index)
 		MaxBackgroundJobs:                2,                        // 2 parallel compactions (RocksDB default)
 		MaxSubcompactions:                1,                        // No intra-compaction parallelism (RocksDB default)
 		MaxCompactionBytesMB:             1600,                     // 25x target_file_size_base (RocksDB typical default)
@@ -276,8 +292,8 @@ func DefaultConfig() SimConfig {
 		LevelCompactionDynamicLevelBytes: true,                     // true matches RocksDB default (v8.2+)
 		CompactionStyle:                  CompactionStyleUniversal, // Universal compaction (default as per user request)
 		MaxSizeAmplificationPercent:      200,                      // 200% max size amplification (RocksDB default)
-		FIFOMaxTableFilesSizeMB: 1024,  // 1024 MB = 1 GB (RocksDB default)
-		FIFOAllowCompaction:     false, // false = no intra-L0 compaction (RocksDB default)
+		FIFOMaxTableFilesSizeMB:          1024,                     // 1024 MB = 1 GB (RocksDB default)
+		FIFOAllowCompaction:              false,                    // false = no intra-L0 compaction (RocksDB default)
 		InitialLSMSizeMB:                 0,                        // 0 = start empty
 		SimulationSpeedMultiplier:        1,                        // 1 = process 1 event per step (real-time feel)
 		RandomSeed:                       0,                        // 0 = use time-based seed

@@ -72,6 +72,7 @@ export interface SimulationConfig {
     compressionThroughputMBps: number;
     decompressionThroughputMBps: number;
     blockSizeKB: number;
+    sstableBuildThroughputMBps: number;
     maxBackgroundJobs: number;
     maxSubcompactions: number;
     maxCompactionBytesMB: number;
@@ -131,6 +132,8 @@ export interface SimulationMetrics {
         fromLevel: number;
         toLevel: number;
     }>;
+    activeBackgroundJobs?: number;
+    maxBackgroundJobs?: number;
     stalledWriteCount?: number;
     maxStalledWriteCount?: number;
     stallDurationSeconds?: number;

@@ -41,12 +41,12 @@ func TestDiskSaturation_ShouldStallAndOOM(t *testing.T) {
 	config := DefaultConfig()
 
 	// Critical: Write rate EXCEEDS disk capacity
-	config.WriteRateMBps = 200.0          // 200 MB/s incoming
-	config.IOThroughputMBps = 100.0       // 100 MB/s disk capacity
-	config.MemtableFlushSizeMB = 64       // 64 MB memtables
-	config.MaxWriteBufferNumber = 3       // Only 3 buffers
-	config.MaxStalledWriteMemoryMB = 256  // OOM at 256MB backlog
-	config.MaxBackgroundJobs = 10         // Plenty of flush capacity
+	config.WriteRateMBps = 200.0         // 200 MB/s incoming
+	config.IOThroughputMBps = 100.0      // 100 MB/s disk capacity
+	config.MemtableFlushSizeMB = 64      // 64 MB memtables
+	config.MaxWriteBufferNumber = 3      // Only 3 buffers
+	config.MaxStalledWriteMemoryMB = 256 // OOM at 256MB backlog
+	config.MaxBackgroundJobs = 10        // Plenty of flush capacity
 
 	// Use leveled compaction with standard config
 	config.CompactionStyle = CompactionStyleLeveled

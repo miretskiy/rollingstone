@@ -125,10 +125,10 @@ func TestFIFOIntraL0Compaction(t *testing.T) {
 	config.FIFOAllowCompaction = true     // Enable intra-L0 compaction
 	// Disable TTL
 	config.NumLevels = 1
-	config.L0CompactionTrigger = 4        // Need 4 files minimum
-	config.MemtableFlushSizeMB = 64       // 64 MB flush size
-	config.MaxCompactionBytesMB = 1000    // Max 1000 MB per compaction
-	config.DeduplicationFactor = 0.9      // 10% deduplication
+	config.L0CompactionTrigger = 4     // Need 4 files minimum
+	config.MemtableFlushSizeMB = 64    // 64 MB flush size
+	config.MaxCompactionBytesMB = 1000 // Max 1000 MB per compaction
+	config.DeduplicationFactor = 0.9   // 10% deduplication
 
 	tree := NewLSMTree(config.NumLevels, float64(config.MemtableFlushSizeMB))
 	compactor := NewFIFOCompactor(12345)
@@ -165,7 +165,7 @@ func TestFIFOIntraL0LargeFiles(t *testing.T) {
 	config.CompactionStyle = CompactionStyleFIFO
 	config.FIFOMaxTableFilesSizeMB = 5000 // Very large threshold
 	config.FIFOAllowCompaction = true
-	
+
 	config.NumLevels = 1
 	config.L0CompactionTrigger = 4
 	config.MemtableFlushSizeMB = 64 // 64 MB flush size
@@ -273,7 +273,7 @@ func TestFIFODiminishingReturns(t *testing.T) {
 	config.CompactionStyle = CompactionStyleFIFO
 	config.FIFOMaxTableFilesSizeMB = 5000
 	config.FIFOAllowCompaction = true
-	
+
 	config.NumLevels = 1
 	config.L0CompactionTrigger = 4
 	config.MemtableFlushSizeMB = 64

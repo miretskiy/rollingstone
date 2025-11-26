@@ -116,6 +116,7 @@ const defaultConfig: SimulationConfig = {
     compressionThroughputMBps: 750,
     decompressionThroughputMBps: 3700,
     blockSizeKB: 4,
+    sstableBuildThroughputMBps: 75,
     maxBackgroundJobs: 2,
     maxSubcompactions: 1,
     maxCompactionBytesMB: 1600,

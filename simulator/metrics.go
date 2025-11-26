@@ -59,8 +59,10 @@ type Metrics struct {
 	DiskUtilizationPercent float64 `json:"diskUtilizationPercent"` // Percentage of disk bandwidth used (0-100%)
 
 	// In-progress activities (for UI display)
-	InProgressCount   int                      `json:"inProgressCount"`   // Number of ongoing writes
-	InProgressDetails []map[string]interface{} `json:"inProgressDetails"` // Details of ongoing writes
+	InProgressCount        int                      `json:"inProgressCount"`        // Number of ongoing writes
+	InProgressDetails      []map[string]interface{} `json:"inProgressDetails"`      // Details of ongoing writes
+	ActiveBackgroundJobs   int                      `json:"activeBackgroundJobs"`   // Number of background job slots currently busy
+	MaxBackgroundJobs      int                      `json:"maxBackgroundJobs"`      // Total number of background job slots available
 
 	// Aggregate stats since last UI update (for fast simulations)
 	// Map of fromLevel -> stats for compactions that completed between UI updates
@@ -833,7 +835,7 @@ func (m *Metrics) CapThroughput(maxThroughputMBps float64) {
 
 // Update updates the timestamp and recalculates metrics
 func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int, diskBusyUntil float64, ioThroughputMBps float64,
-	isStalled bool, stalledWriteCount int, maxBackgroundJobs int, config SimConfig, rng *rand.Rand) {
+	isStalled bool, stalledWriteCount int, activeBackgroundJobs int, maxBackgroundJobs int, config SimConfig, rng *rand.Rand) {
 	m.Timestamp = virtualTime
 	m.UpdateSpaceAmplification(lsmTree.TotalSizeMB, lsmTree)
 	m.UpdateReadAmplification(lsmTree, numMemtables)
@@ -885,6 +887,10 @@ func (m *Metrics) Update(virtualTime float64, lsmTree *LSMTree, numMemtables int
 		m.MaxStalledWriteCount = stalledWriteCount
 	}
 	// StallDurationSeconds is accumulated in processWrite, not here.
+
+	// Update background job metrics
+	m.ActiveBackgroundJobs = activeBackgroundJobs
+	m.MaxBackgroundJobs = maxBackgroundJobs
 
 	// Update in-progress activities for UI display
 	m.InProgressCount = len(m.inProgressWrites)

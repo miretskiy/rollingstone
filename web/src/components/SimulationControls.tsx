@@ -354,7 +354,7 @@ export function SimulationControls() {
               </div>
               
               <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <ConfigInput label="Memtable Flush Size" field="memtableFlushSizeMB" min={1} max={512} unit="MB"
+                <ConfigInput label="Memtable Flush Size" field="memtableFlushSizeMB" min={1} max={2048} unit="MB"
                   tooltip="Size at which memtable is flushed to L0" />
                 <ConfigInput label="Max Immutable Memtables" field="maxWriteBufferNumber" min={1} max={10}
                   tooltip="Max number of memtables before write stall" />

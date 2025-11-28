@@ -1,0 +1,23 @@
+Why Other Compaction Styles Don't Work:
+
+  Leveled:
+  Read amp: ~7 ✓
+  Write amp: ~10-15 ✗
+  Disk demand: 277 × 15 = 4,155 MB/s
+  Available: 1,048 MB/s
+  OVER CAPACITY by 4× - system would collapse
+
+  Universal (standard config):
+  Read amp: ~20-50
+  Write amp: ~5-8
+  Disk demand: 277 × 6 = 1,662 MB/s
+  Available: 1,048 MB/s
+  STILL over capacity by 59%
+
+  Universal (high size_ratio=10, lazy compaction):
+  Read amp: ~100-200 (worse than FIFO!)
+  Write amp: ~3-4
+  Disk demand: 277 × 3.5 = 970 MB/s (fits!)
+  But read amp didn't improve!
+
+

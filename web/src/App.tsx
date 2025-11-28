@@ -4,6 +4,7 @@ import { SimulationControls } from './components/SimulationControls';
 import { MetricsDashboard } from './components/MetricsDashboard';
 import { LSMTreeVisualization } from './components/LSMTreeVisualization';
 import { EventLog } from './components/EventLog';
+import { GrafanaPanel } from './components/GrafanaPanel';
 
 function App() {
   const { connect, disconnect } = useStore();
@@ -38,6 +39,9 @@ function App() {
 
         {/* LSM Tree Visualization */}
         <LSMTreeVisualization />
+
+        {/* Grafana Integration (optional) */}
+        <GrafanaPanel />
 
         {/* Event Log */}
         <EventLog />

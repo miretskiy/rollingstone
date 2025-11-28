@@ -4,15 +4,42 @@ set -e  # Exit on any error
 echo "🚀 Starting RollingStone..."
 echo ""
 
-# Clean up any existing processes on port 8080
-echo "🧹 Cleaning up existing processes on port 8080..."
+# Clean up any existing processes
+echo "🧹 Cleaning up existing processes..."
 lsof -ti:8080 2>/dev/null | xargs kill -9 2>/dev/null || true
+pkill -f "prometheus.*rollingstone" 2>/dev/null || true
+pkill -f "grafana.*server" 2>/dev/null || true
 sleep 1
-echo "✅ Port 8080 is free"
+echo "✅ Ports cleaned"
 echo ""
 
 # Build everything
 ./build.sh
+echo ""
+
+# Start Prometheus (if installed)
+if command -v prometheus &> /dev/null; then
+    echo "📊 Starting Prometheus..."
+    mkdir -p prom-data
+    prometheus --config.file=prometheus.yml --storage.tsdb.path=./prom-data --web.listen-address=:9090 > prometheus.log 2>&1 &
+    PROM_PID=$!
+    echo "✅ Prometheus started (PID: $PROM_PID, http://localhost:9090)"
+else
+    echo "⚠️  Prometheus not installed (brew install prometheus for metrics)"
+    PROM_PID=""
+fi
+
+# Start Grafana (if installed)
+if command -v grafana-server &> /dev/null; then
+    echo "📈 Starting Grafana..."
+    mkdir -p grafana-data
+    grafana-server --config=grafana.ini --homepath=/opt/homebrew/opt/grafana/share/grafana > grafana.log 2>&1 &
+    GRAF_PID=$!
+    echo "✅ Grafana started (PID: $GRAF_PID, http://localhost:3000)"
+else
+    echo "⚠️  Grafana not installed (brew install grafana for dashboards)"
+    GRAF_PID=""
+fi
 echo ""
 
 # Start server in background
@@ -28,10 +55,19 @@ while [ $WAITED -lt $MAX_WAIT ]; do
   if curl -s http://localhost:8080 | grep -q "RollingStone" 2>/dev/null; then
     echo "✅ Server started successfully!"
     echo ""
-    echo "🌐 Server running at: http://localhost:8080"
-    echo "📊 Server PID: $SERVER_PID"
-    echo "📝 Server logs: tail -f server.log"
-    echo "🛑 To stop: kill $SERVER_PID  OR  curl http://localhost:8080/quitquitquit"
+    echo "🌐 Simulator UI: http://localhost:8080"
+    echo "📊 Prometheus metrics: http://localhost:8080/metrics"
+    if [ -n "$PROM_PID" ]; then
+      echo "📈 Prometheus UI: http://localhost:9090"
+    fi
+    if [ -n "$GRAF_PID" ]; then
+      echo "📊 Grafana dashboards: http://localhost:3000 (admin/admin)"
+    fi
+    echo ""
+    echo "📝 Logs: tail -f server.log prometheus.log grafana.log"
+    echo "🛑 To stop: curl http://localhost:8080/quitquitquit"
+    [ -n "$PROM_PID" ] && echo "           kill $PROM_PID (Prometheus)"
+    [ -n "$GRAF_PID" ] && echo "           kill $GRAF_PID (Grafana)"
     echo ""
     exit 0
   fi

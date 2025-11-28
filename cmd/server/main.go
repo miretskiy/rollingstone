@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/miretskiy/rollingstone/simulator"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var upgrader = websocket.Upgrader{
@@ -345,6 +346,9 @@ func uiUpdateLoop(conn *safeConn, state *simState) {
 					return
 				}
 
+				// Update Prometheus metrics
+				updatePrometheusMetrics(metrics, state)
+
 				// Reset aggregate stats after UI update (for fast simulations)
 				state.resetAggregateStats()
 			}
@@ -595,6 +599,9 @@ func quitHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Initialize Prometheus metrics
+	initPrometheusMetrics()
+
 	// Serve static files from web/dist (React build output)
 	distDir := filepath.Join("web", "dist")
 	if _, err := os.Stat(distDir); os.IsNotExist(err) {
@@ -614,6 +621,11 @@ func main() {
 		// Shutdown endpoint
 		if r.URL.Path == "/quitquitquit" {
 			quitHandler(w, r)
+			return
+		}
+		// Prometheus metrics endpoint
+		if r.URL.Path == "/metrics" {
+			promhttp.Handler().ServeHTTP(w, r)
 			return
 		}
 		// Static files (favicon, assets, etc.) - serve if file exists

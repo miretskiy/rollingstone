@@ -76,3 +76,8 @@ server_debug.log
 # Claude Code internal state
 /.claude/agents/
 /.claude/settings.local.json
+
+# Prometheus and Grafana data
+prom-data/
+grafana-data/
+*.log
